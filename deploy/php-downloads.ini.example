@@ -1,0 +1,7 @@
+; Copy values into the PHP-FPM pool or php.ini used by this site.
+upload_max_filesize = 200M
+post_max_size = 2100M
+max_file_uploads = 100
+max_execution_time = 600
+max_input_time = 600
+memory_limit = 512M

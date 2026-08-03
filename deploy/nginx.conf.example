@@ -1,0 +1,30 @@
+location ~ ^/downloads/(?:app|deploy)/ { deny all; }
+location ~ ^/downloads/(?:config(?:\.local)?\.php|README\.md|VERSION|INSTALL\.txt|DEPLOY-CHECKLIST\.txt|\.user\.ini)$ { deny all; }
+
+# Example for an app physically located in /var/www/site/downloads
+location = /downloads {
+    return 301 /downloads/;
+}
+
+location = /downloads/ {
+    try_files "" /downloads/index.php?$query_string;
+}
+
+location /downloads/assets/ {
+    alias /var/www/site/downloads/assets/;
+    access_log off;
+    expires 7d;
+}
+
+location /downloads/ {
+    try_files $uri /downloads/index.php?$query_string;
+}
+
+location = /downloads/index.php {
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME /var/www/site/downloads/index.php;
+    fastcgi_param SCRIPT_NAME /downloads/index.php;
+    fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+    client_max_body_size 2100M;
+    fastcgi_read_timeout 900s;
+}

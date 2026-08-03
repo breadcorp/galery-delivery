@@ -1,0 +1,31 @@
+DOWNLOADS - RYCHLA INSTALACE
+============================
+
+1. Nahrajte celou slozku "downloads" do korene webu.
+2. Otevrete https://vase-domena.cz/downloads/
+3. Na uvodni strance nastavte admin heslo.
+
+Hotovo. Instalace se po ulozeni hesla sama zamkne.
+
+Adresy:
+- Admin:    /downloads/admin
+- Galerie:  /downloads/<uuid-gallery>
+- SSD data: /mnt/ssd/photos/downloads/<uuid-gallery>
+
+Pokud uvodni kontrola ukaze cervenou chybu, webova aplikace nema
+potrebne PHP rozsireni nebo pravo zapisu do slozky.
+
+AKTUALIZACE Z VERZE 2 NEBO 3
+=====================
+
+- Nemazte /mnt/ssd/photos/downloads.
+- Prepiste pouze obsah webove slozky /var/www/html/downloads.
+- Stare galerie zustanou zachovane. U stare galerie jednou zmente heslo,
+  aby se mohlo dale trvale zobrazovat v adminu.
+
+POZADI
+=======
+
+V adminu otevrite /downloads/admin/background a vlozte primy HTTPS
+odkaz na GIF. Odkaz je globalni vychozi pozadi. V detailu kazde galerie muzete
+nastavit vlastni HTTPS odkaz na GIF nebo zvolit navrat ke globalnimu.
