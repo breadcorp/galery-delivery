@@ -58,3 +58,9 @@ The `.user.ini` file will try to set uploads to 200 MB. Some servers ignore cust
 2. Replace only the web application files in `/var/www/html/downloads/`.
 3. On first load, the encryption key is created automatically on the SSD.
 4. For older galleries, the original password cannot be recovered from the hash. Just change it once; the new password will remain visible in the admin area.
+
+
+
+
+
+Yes the UI may look like AI generated, yes it is im too lazy to do UI stuff
