@@ -79,8 +79,15 @@ try {
         foreach ($galleries as $gallery) {
             $uuid = (string) $gallery['id'];
             $active = !empty($gallery['active']);
+            $name = trim((string) ($gallery['name'] ?? ''));
             echo '<a class="gallery-row" href="' . e(base_url($config, 'admin/gallery/' . $uuid)) . '">';
-            echo '<div><code>' . e($uuid) . '</code><div class="row-meta">' . count($gallery['files'] ?? []) . ' photos · ' . format_bytes((int) ($gallery['_disk_bytes'] ?? 0)) . ' · ' . (int) ($gallery['download_count'] ?? 0) . ' downloads</div></div>';
+            echo '<div>';
+            if ($name !== '') {
+                echo '<strong class="row-title">' . e($name) . '</strong><code class="row-uuid">' . e($uuid) . '</code>';
+            } else {
+                echo '<code>' . e($uuid) . '</code>';
+            }
+            echo '<div class="row-meta">' . count($gallery['files'] ?? []) . ' photos · ' . format_bytes((int) ($gallery['_disk_bytes'] ?? 0)) . ' · ' . (int) ($gallery['download_count'] ?? 0) . ' downloads</div></div>';
             echo '<span class="status ' . ($active ? 'on' : 'off') . '">' . ($active ? 'Active' : 'Disabled') . '</span></a>';
         }
         echo '</section></main>';
@@ -124,8 +131,9 @@ try {
         $generated = random_password();
         render_header($config, 'New gallery', true, 'admin-page');
         echo '<main class="container narrow">'; render_flashes();
-        echo '<h1>New gallery</h1><p class="muted">The gallery will not have a name. The password will remain permanently available to the administrator in the gallery details.</p>';
+        echo '<h1>New gallery</h1><p class="muted">The name is optional and is only shown to the customer on the welcome screen. The password will remain permanently available to the administrator in the gallery details.</p>';
         echo '<form class="panel" method="post" action="' . e(base_url($config, 'admin/create')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '">';
+        echo '<label>Gallery name (optional)<input type="text" name="name" maxlength="120" placeholder="e.g. Wedding Novák & Svobodová"></label>';
         echo '<label>Gallery password<input type="text" name="password" minlength="8" maxlength="100" value="' . e($generated) . '" required></label>';
         echo '<button class="primary">Create gallery</button></form></main>';
         render_footer($config); exit;
@@ -135,7 +143,7 @@ try {
         require_admin($config); verify_csrf();
         $password = trim((string) ($_POST['password'] ?? ''));
         if (app_strlen($password) < 8) throw new RuntimeException('The password must be at least 8 characters long.');
-        $gallery = create_gallery($config, $password);
+        $gallery = create_gallery($config, $password, (string) ($_POST['name'] ?? ''));
         redirect_to($config, 'admin/gallery/' . $gallery['id']);
     }
 
@@ -146,8 +154,11 @@ try {
         $uuid = (string) $gallery['id'];
         $shownPassword = gallery_admin_password($config, $gallery);
         render_header($config, 'Gallery details', true, 'admin-page');
+        $galleryName = trim((string) ($gallery['name'] ?? ''));
         echo '<main class="container">'; render_flashes();
-        echo '<section class="top-row"><div><h1>Gallery details</h1><code>' . e($uuid) . '</code></div><a class="button" target="_blank" rel="noopener" href="' . e(base_url($config, $uuid)) . '">Open gallery</a></section>';
+        echo '<section class="top-row"><div><h1>' . e($galleryName !== '' ? $galleryName : 'Gallery details') . '</h1><code>' . e($uuid) . '</code></div><a class="button" target="_blank" rel="noopener" href="' . e(base_url($config, $uuid)) . '">Open gallery</a></section>';
+        echo '<section class="panel"><h2>Gallery name</h2><p class="muted">Shown to the customer on the welcome screen. Leave empty to show none.</p>';
+        echo '<form class="inline-form" method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/name')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label>Name<input type="text" name="name" maxlength="120" placeholder="e.g. Wedding Novák & Svobodová" value="' . e($galleryName) . '"></label><button class="primary">Save name</button></form></section>';
         echo '<div class="secret-box"><strong>Public link</strong><div><code id="gallery-link">' . e(absolute_url($config, $uuid)) . '</code><button type="button" class="small" data-copy="#gallery-link">Copy</button></div></div>';
         if ($shownPassword !== null) {
             echo '<div class="secret-box"><strong>Gallery password</strong><div><code id="gallery-password">' . e($shownPassword) . '</code><button type="button" class="small" data-copy="#gallery-password">Copy</button></div></div>';
@@ -180,9 +191,11 @@ try {
         echo '<form class="danger-zone" method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/delete')) . '" data-confirm="Really delete the gallery including all photos?"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button class="danger">Delete gallery</button></form></section>';
         echo '<section><h2>Photos</h2><div class="admin-photo-grid">';
         if (empty($gallery['files'])) echo '<div class="empty">The gallery is empty.</div>';
+        $frame = 0;
         foreach ($gallery['files'] ?? [] as $file) {
+            $frame++;
             $fid = (string) $file['id'];
-            echo '<article class="admin-photo"><img loading="lazy" src="' . e(base_url($config, $uuid . '/preview/' . $fid . '?admin=1')) . '" alt=""><div><strong title="' . e((string) $file['original_name']) . '">' . e((string) $file['original_name']) . '</strong><span>' . format_bytes((int) $file['size']) . '</span></div><form method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/photo/' . $fid . '/delete')) . '" data-confirm="Delete this photo?"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button class="danger small">Delete</button></form></article>';
+            echo '<article class="admin-photo"><div class="admin-photo-media"><span class="frame-no">' . str_pad((string) $frame, 2, '0', STR_PAD_LEFT) . '</span><img loading="lazy" src="' . e(base_url($config, $uuid . '/preview/' . $fid . '?admin=1')) . '" alt=""></div><div><strong title="' . e((string) $file['original_name']) . '">' . e((string) $file['original_name']) . '</strong><span>' . format_bytes((int) $file['size']) . '</span></div><form method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/photo/' . $fid . '/delete')) . '" data-confirm="Delete this photo?"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button class="danger small">Delete</button></form></article>';
         }
         echo '</div></section></main>';
         render_footer($config); exit;
@@ -220,6 +233,14 @@ try {
         $url = (string) ($_POST['background_url'] ?? '');
         save_gallery_background($config, $gallery, $mode, $url);
         flash('success', $mode === 'custom' ? 'The gallery custom background was saved.' : 'The gallery is using the global background again.');
+        redirect_to($config, 'admin/gallery/' . $gallery['id']);
+    }
+
+    if (preg_match('#^/admin/gallery/([0-9a-f-]+)/name$#i', $path, $m) && $method === 'POST') {
+        require_admin($config); verify_csrf();
+        $gallery = load_gallery($config, $m[1]); if (!$gallery) throw new RuntimeException('Gallery not found.');
+        rename_gallery($config, $gallery, (string) ($_POST['name'] ?? ''));
+        flash('success', 'The gallery name was saved.');
         redirect_to($config, 'admin/gallery/' . $gallery['id']);
     }
 
@@ -383,17 +404,22 @@ try {
     if (preg_match('#^/([0-9a-f-]+)$#i', $path, $m) && $method === 'GET') {
         $gallery = load_gallery($config, $m[1]);
         if (!$gallery || empty($gallery['active'])) { http_response_code(404); exit('The gallery is not available.'); }
-        render_header($config, 'Private gallery', false, 'gallery-page'); render_background($config, $gallery);
+        $galleryName = trim((string) ($gallery['name'] ?? ''));
+        render_header($config, $galleryName !== '' ? $galleryName : 'Private gallery', false, 'gallery-page');
+        render_background($config, $gallery);
+        render_welcome_screen($config, $gallery);
         echo '<main class="gallery-shell">'; render_flashes();
         if (!gallery_is_unlocked((string) $gallery['id'])) {
-            echo '<section class="unlock-card"><div class="lock-icon">↓</div><h1>Private gallery</h1><p>Enter the password to view the photos.</p><form method="post" action="' . e(base_url($config, $gallery['id'] . '/unlock')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><input type="password" name="password" placeholder="Password" required autofocus autocomplete="current-password"><button class="primary wide">Unlock</button></form></section>';
+            echo '<section class="unlock-card"><div class="lock-icon">' . aperture_icon(26) . '</div><h1>' . e($galleryName !== '' ? $galleryName : 'Private gallery') . '</h1><p>Enter the password to view the photos.</p><form method="post" action="' . e(base_url($config, $gallery['id'] . '/unlock')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><input type="password" name="password" placeholder="Password" required autofocus autocomplete="current-password"><button class="primary wide">Unlock</button></form></section>';
         } else {
-            echo '<section class="gallery-toolbar"><div><h1>Photos</h1><span>' . count($gallery['files'] ?? []) . ' files</span></div>';
+            echo '<section class="gallery-toolbar"><div><h1>' . e($galleryName !== '' ? $galleryName : 'Photos') . '</h1><span>' . count($gallery['files'] ?? []) . ' files</span></div>';
             if (!empty($gallery['zip']['ready'])) echo '<a class="button primary" href="' . e(base_url($config, $gallery['id'] . '/full.zip')) . '">Download all · ' . format_bytes((int) $gallery['zip']['size']) . '</a>';
             echo '</section><section class="public-photo-grid">';
+            $frame = 0;
             foreach ($gallery['files'] ?? [] as $file) {
+                $frame++;
                 $fid = (string) $file['id'];
-                echo '<article class="public-photo"><a href="' . e(base_url($config, $gallery['id'] . '/photo/' . $fid)) . '" title="Download ' . e((string) $file['original_name']) . '"><img loading="lazy" src="' . e(base_url($config, $gallery['id'] . '/preview/' . $fid)) . '" alt=""><span>Download</span></a></article>';
+                echo '<article class="public-photo"><a href="' . e(base_url($config, $gallery['id'] . '/photo/' . $fid)) . '" title="Download ' . e((string) $file['original_name']) . '"><span class="frame-no">' . str_pad((string) $frame, 2, '0', STR_PAD_LEFT) . '</span><img loading="lazy" src="' . e(base_url($config, $gallery['id'] . '/preview/' . $fid)) . '" alt=""><span class="dl-label">Download</span></a></article>';
             }
             if (empty($gallery['files'])) echo '<div class="empty glass">The gallery is empty.</div>';
             echo '</section>';

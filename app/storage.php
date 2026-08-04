@@ -102,7 +102,7 @@ function directory_size(string $dir): int
     return $size;
 }
 
-function create_gallery(array $config, string $plainPassword): array
+function create_gallery(array $config, string $plainPassword, string $name = ''): array
 {
     $uuid = uuid_v4();
     $dir = gallery_dir($config, $uuid);
@@ -113,6 +113,7 @@ function create_gallery(array $config, string $plainPassword): array
     }
     $gallery = [
         'id' => $uuid,
+        'name' => normalize_gallery_name($name),
         'password_hash' => secure_password_hash($plainPassword),
         'password_admin' => encrypt_admin_value($config, $plainPassword),
         'created_at' => date(DATE_ATOM),
@@ -124,6 +125,19 @@ function create_gallery(array $config, string $plainPassword): array
         'zip' => ['ready' => false, 'updated_at' => null, 'size' => 0],
     ];
     write_json_file(gallery_json_path($config, $uuid), $gallery);
+    return $gallery;
+}
+
+function normalize_gallery_name(string $name): string
+{
+    $name = trim(preg_replace('/\s+/u', ' ', $name) ?? $name);
+    return app_substr($name, 0, 120);
+}
+
+function rename_gallery(array $config, array $gallery, string $name): array
+{
+    $gallery['name'] = normalize_gallery_name($name);
+    save_gallery($config, $gallery);
     return $gallery;
 }
 

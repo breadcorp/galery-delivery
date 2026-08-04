@@ -234,7 +234,7 @@ function render_setup_page(array $config, array $checks): void
     $blocked = setup_has_blockers($checks);
     render_header($config, 'Initial setup', false, 'setup-page');
     echo '<main class="setup-shell">';
-    echo '<section class="setup-hero"><div class="setup-mark">D</div><div><p class="eyebrow">DOWNLOADS</p><h1>Initial setup</h1><p class="setup-lead">Set the administrator password once. After that the installation will be locked and the dashboard will open.</p></div></section>';
+    echo '<section class="setup-hero"><div class="setup-mark">' . aperture_icon(30) . '</div><div><p class="eyebrow">DOWNLOADS</p><h1>Initial setup</h1><p class="setup-lead">Set the administrator password once. After that the installation will be locked and the dashboard will open.</p></div></section>';
     render_flashes();
     echo '<section class="setup-grid"><div class="panel setup-info"><h2>Prepared structure</h2>';
     echo '<dl><div><dt>Admin</dt><dd><code>' . e(base_url($config, 'admin')) . '</code></dd></div>';

@@ -118,6 +118,11 @@ function app_strtolower(string $value): string
     return function_exists('mb_strtolower') ? mb_strtolower($value) : strtolower($value);
 }
 
+function app_strtoupper(string $value): string
+{
+    return function_exists('mb_strtoupper') ? mb_strtoupper($value) : strtoupper($value);
+}
+
 function secure_password_hash(string $password): string
 {
     $algorithm = defined('PASSWORD_ARGON2ID') ? PASSWORD_ARGON2ID : PASSWORD_DEFAULT;
@@ -203,6 +208,12 @@ function gallery_is_unlocked(string $uuid): bool
 function set_gallery_unlocked(string $uuid): void
 {
     $_SESSION[gallery_session_key($uuid)] = time();
+}
+
+function aperture_icon(int $size = 28, string $class = ''): string
+{
+    $cls = $class !== '' ? ' class="' . e($class) . '"' : '';
+    return '<svg' . $cls . ' width="' . $size . '" height="' . $size . '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.3"></circle><path d="M12 20 5.07 8 18.93 8Z"></path><path d="M18.93 16 5.07 16 12 4Z"></path></svg>';
 }
 
 function safe_download_name(string $name): string
