@@ -19,10 +19,9 @@ function redirect_to(array $config, string $path): never
 
 function absolute_url(array $config, string $path = ''): string
 {
-    $https = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
-    $scheme = $https ? 'https' : 'http';
     $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    return $scheme . '://' . $host . base_url($config, $path);
+
+    return 'https://' . $host . base_url($config, $path);
 }
 
 function request_method(): string
