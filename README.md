@@ -10,7 +10,7 @@ Gallery Delivery originally started as a small personal project built for my own
 
 ## Release
 
-Current public release: `0.2.0`
+Current public release: `0.2.5`
 
 ## Core goals
 
