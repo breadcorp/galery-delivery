@@ -27,6 +27,53 @@ function gallery_json_path(array $config, string $uuid): string
     return gallery_dir($config, $uuid) . '/gallery.json';
 }
 
+function normalize_gallery_audit(array $gallery): array
+{
+    $legacyDownloads = max(0, (int) ($gallery['download_count'] ?? 0));
+    $photoDownloads = max(0, (int) ($gallery['photo_downloads'] ?? 0));
+    $zipDownloads = max(0, (int) ($gallery['zip_downloads'] ?? 0));
+
+    if ($legacyDownloads > 0 && $photoDownloads === 0 && $zipDownloads === 0) {
+        $photoDownloads = $legacyDownloads;
+    }
+
+    $gallery['views'] = max(0, (int) ($gallery['views'] ?? 0));
+    $gallery['unlocks'] = max(0, (int) ($gallery['unlocks'] ?? 0));
+    $gallery['photo_downloads'] = $photoDownloads;
+    $gallery['zip_downloads'] = $zipDownloads;
+    $gallery['last_access_at'] = !empty($gallery['last_access_at']) ? (string) $gallery['last_access_at'] : null;
+    $gallery['download_count'] = $photoDownloads + $zipDownloads;
+
+    return $gallery;
+}
+
+function gallery_total_downloads(array $gallery): int
+{
+    $photoDownloads = max(0, (int) ($gallery['photo_downloads'] ?? 0));
+    $zipDownloads = max(0, (int) ($gallery['zip_downloads'] ?? 0));
+    return $photoDownloads + $zipDownloads;
+}
+
+function gallery_record_event(array $gallery, string $event): array
+{
+    $gallery = normalize_gallery_audit($gallery);
+
+    if ($event === 'view') {
+        $gallery['views'] = (int) $gallery['views'] + 1;
+    } elseif ($event === 'unlock') {
+        $gallery['unlocks'] = (int) $gallery['unlocks'] + 1;
+    } elseif ($event === 'photo_download') {
+        $gallery['photo_downloads'] = (int) $gallery['photo_downloads'] + 1;
+    } elseif ($event === 'zip_download') {
+        $gallery['zip_downloads'] = (int) $gallery['zip_downloads'] + 1;
+    }
+
+    $gallery['download_count'] = gallery_total_downloads($gallery);
+    $gallery['last_access_at'] = date(DATE_ATOM);
+
+    return $gallery;
+}
+
 function read_json_file(string $path): ?array
 {
     if (!is_file($path)) {
@@ -77,6 +124,7 @@ function list_galleries(array $config): array
         try {
             $gallery = read_json_file($dir . '/gallery.json');
             if ($gallery) {
+                $gallery = normalize_gallery_audit($gallery);
                 $gallery['_disk_bytes'] = directory_size($dir);
                 $items[] = $gallery;
             }
@@ -119,6 +167,11 @@ function create_gallery(array $config, string $plainPassword, string $name = '')
         'created_at' => date(DATE_ATOM),
         'updated_at' => date(DATE_ATOM),
         'active' => true,
+        'views' => 0,
+        'unlocks' => 0,
+        'photo_downloads' => 0,
+        'zip_downloads' => 0,
+        'last_access_at' => null,
         'download_count' => 0,
         'background' => ['mode' => 'global'],
         'files' => [],
@@ -143,11 +196,16 @@ function rename_gallery(array $config, array $gallery, string $name): array
 
 function load_gallery(array $config, string $uuid): ?array
 {
-    return read_json_file(gallery_json_path($config, $uuid));
+    $gallery = read_json_file(gallery_json_path($config, $uuid));
+    if (!$gallery) {
+        return null;
+    }
+    return normalize_gallery_audit($gallery);
 }
 
 function save_gallery(array $config, array $gallery): void
 {
+    $gallery = normalize_gallery_audit($gallery);
     $gallery['updated_at'] = date(DATE_ATOM);
     write_json_file(gallery_json_path($config, (string) $gallery['id']), $gallery);
 }

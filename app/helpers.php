@@ -220,3 +220,29 @@ function safe_download_name(string $name): string
     $name = str_replace(["\r", "\n", '"'], ['', '', "'"], $name);
     return $name !== '' ? $name : 'download';
 }
+
+function format_last_access(?string $value): string
+{
+    if ($value === null || trim($value) === '') {
+        return 'never';
+    }
+
+    try {
+        $dt = new DateTimeImmutable($value);
+    } catch (Throwable) {
+        return 'unknown';
+    }
+
+    $today = new DateTimeImmutable('today');
+    $yesterday = $today->modify('-1 day');
+    $day = $dt->format('Y-m-d');
+
+    if ($day === $today->format('Y-m-d')) {
+        return 'today';
+    }
+    if ($day === $yesterday->format('Y-m-d')) {
+        return 'yesterday';
+    }
+
+    return $dt->format('d.m.Y');
+}

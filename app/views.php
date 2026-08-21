@@ -16,7 +16,7 @@ function render_header(array $config, string $title, bool $admin = false, string
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,560;1,9..144,500&family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="{$base}/assets/modern.css?v=6">
+<link rel="stylesheet" href="{$base}/assets/modern.css?v=8">
 </head>
 <body class="{$bodyClass}">
 HTML;
@@ -57,7 +57,7 @@ function render_welcome_screen(array $config, array $gallery): void
 function render_footer(array $config): void
 {
     $base = e((string) $config['base_path']);
-    echo '<script src="' . $base . '/assets/app.js?v=3"></script></body></html>';
+    echo '<script src="' . $base . '/assets/app.js?v=5"></script></body></html>';
 }
 
 function render_background(array $config, ?array $gallery = null): void

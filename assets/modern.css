@@ -338,6 +338,72 @@ body.gallery-page {
 
 .disk-list { display: grid; gap: 10px; }
 .disk-card { padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+/* -- download status popup --------------------------------------- */
+.download-toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 60;
+  width: min(360px, calc(100vw - 28px));
+  background: rgba(33, 27, 19, 0.94);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+  color: var(--text);
+  opacity: 0;
+  transform: translateY(10px);
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+.download-toast.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.download-toast-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--paper);
+}
+.download-toast-sub {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.83rem;
+  font-family: var(--font-mono);
+}
+.download-progress {
+  margin-top: 9px;
+  height: 7px;
+  background: rgba(239, 230, 209, 0.1);
+  border: 1px solid rgba(239, 230, 209, 0.12);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.download-progress-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  transition: width 180ms linear;
+}
+.download-progress.indeterminate .download-progress-fill {
+  width: 35%;
+  animation: download-progress-indeterminate 1s linear infinite;
+}
+@keyframes download-progress-indeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(300%); }
+}
+@media (max-width: 560px) {
+  .download-toast {
+    right: 10px;
+    bottom: 10px;
+    width: calc(100vw - 20px);
+  }
+}
 .disk-card strong { font-family: var(--font-mono); font-weight: 500; }
 .disk-card.active { border-color: var(--accent); }
 .disk-card small { color: var(--muted); display: block; margin-top: 6px; }
