@@ -23,6 +23,9 @@ return [
     // Maximum background upload: 250 MB.
     'max_background_bytes' => 250 * 1024 * 1024,
 
+    // Gallery unlock session TTL: 24 hours.
+    'gallery_unlock_ttl' => 24 * 60 * 60,
+
     'session_name' => 'downloads_admin_session',
     'timezone' => getenv('APP_TIMEZONE') ?: 'Europe/Prague',
 ];

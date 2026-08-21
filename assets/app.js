@@ -206,8 +206,15 @@ document.querySelectorAll('input[type="file"]').forEach((input) => {
     const kind = link.dataset.downloadKind || 'download';
     const hintedSize = Number(link.dataset.downloadSize || '0');
 
-    if (!streamSupported) {
-      showToast('Starting browser download', 'Live progress is not supported in this browser.', false);
+    const allowStream = (link.dataset.downloadStream || '1') !== '0' && kind !== 'zip';
+
+    if (!streamSupported || !allowStream) {
+      if (!allowStream) {
+        setProgress(0, true);
+        showToast('Starting browser ZIP download', 'Large ZIP files are streamed by the browser to avoid high memory usage.', false);
+      } else {
+        showToast('Starting browser download', 'Live progress is not supported in this browser.', false);
+      }
       window.location.href = href;
       return;
     }
@@ -278,7 +285,7 @@ document.querySelectorAll('input[type="file"]').forEach((input) => {
       setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 
       setProgress(100, false);
-      showToast(kind === 'zip' ? 'ZIP downloaded' : 'Photo downloaded', 'Saved as ' + fileName, false);
+      showToast('Photo downloaded', 'Saved as ' + fileName, false);
     } catch (error) {
       console.error('[download-stream]', error);
       setProgress(0, true);

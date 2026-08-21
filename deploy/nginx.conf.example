@@ -1,5 +1,7 @@
-location ~ ^/downloads/(?:app|deploy)/ { deny all; }
-location ~ ^/downloads/(?:config(?:\.local)?\.php|README\.md|VERSION|INSTALL\.txt|DEPLOY-CHECKLIST\.txt|\.user\.ini)$ { deny all; }
+location ~ ^/downloads/(?:app|deploy)(?:/|$) { deny all; }
+location ~ ^/downloads/(?:\.git|\.github|\.vscode)(?:/|$) { deny all; }
+location ~ ^/downloads/(?:config(?:\.local)?\.php|README\.md|VERSION|INSTALL\.txt|DEPLOY-CHECKLIST\.txt|LICENSE|\.env|\.user\.ini|composer\.(?:json|lock))$ { deny all; }
+location ~ ^/downloads/.*\.(?:lock|tmp|bak|dist|sql|ini|log)$ { deny all; }
 
 # Example for an app physically located in /var/www/site/downloads
 location = /downloads {
