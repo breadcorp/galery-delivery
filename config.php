@@ -13,6 +13,7 @@ return [
     // Filled automatically by the one-time introduction.
     'setup_complete' => false,
     'admin_password_hash' => getenv('DOWNLOADS_ADMIN_PASSWORD_HASH') ?: '',
+    'admin_users' => [],
 
     // Generated automatically during setup and used to encrypt recoverable gallery passwords.
     'app_secret' => getenv('DOWNLOADS_APP_SECRET') ?: '',

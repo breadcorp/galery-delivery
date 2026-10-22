@@ -6,11 +6,11 @@ Gallery Delivery is a standalone PHP app for private client galleries with passw
 
 ## Project history
 
-Gallery Delivery originally started as a small personal project built for my own photo delivery workflow. It went through several private iterations before being cleaned up and published as an open-source project. Public releases therefore start in the 0.x version range.
+Gallery Delivery originally started as a small personal project for my own photo delivery workflow. It went through several private iterations before being cleaned up and published as an open-source project. Public releases therefore use the 0.x version series while the project is still evolving.
 
 ## Release
 
-Current public release: `0.2.5`
+Current public release: `0.2.6`
 
 ## Core goals
 
@@ -29,9 +29,11 @@ Current public release: `0.2.5`
 - per-photo downloads
 - full gallery ZIP download
 - lazy ZIP rebuild (rebuild only when needed)
-- JPG, PNG, WebP uploads
+- JPG, PNG, WebP, and common camera RAW uploads (DNG, CR2/CR3, NEF, ARW, RAF, ORF, RW2, PEF, 3FR, IIQ, X3F)
+- RAW downloads with a file card when a browser preview is unavailable
 - generated JPG previews (GD optional)
 - encrypted admin-visible gallery passwords
+- multiple administrator accounts with a permanent `admin` account
 - gallery enable/disable
 - gallery password rotation
 - auth-version invalidation on password change
@@ -42,6 +44,7 @@ Current public release: `0.2.5`
 - duplicate UUID conflict detection across disks
 - cached storage stats for dashboard performance
 - lightweight sidecar live stats
+- atomic JSON writes for mutable state
 - global background (file or URL)
 - per-gallery custom background URL
 - Apache/Nginx hardening examples
@@ -157,6 +160,15 @@ See:
 `gallery.json` from existing installations is loaded and normalized with defaults where possible.
 
 New fields are added naturally during normal write operations. Existing UUID links remain unchanged.
+
+`settings.json` stays in its current location in this release.
+
+## Automated checks
+
+- Lint: `find . -name '*.php' -print0 | xargs -0 -n1 php -l`
+- Tests: `php tests/run.php`
+
+GitHub Actions runs both checks on push and pull request.
 
 ## Backup
 

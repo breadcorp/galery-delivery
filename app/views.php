@@ -23,7 +23,8 @@ HTML;
     if ($admin && is_admin()) {
         $brand = e((string) ($config['app_name'] ?? 'Downloads'));
         echo '<header class="admin-nav"><a class="brand" href="' . $base . '/admin">' . aperture_icon(22, 'brand-mark') . '<span>' . $brand . '</span></a><nav>';
-        echo '<a href="' . $base . '/admin">Galleries</a><a href="' . $base . '/admin/background">Background</a><a href="' . $base . '/admin/settings">Settings</a>';
+        echo '<a href="' . $base . '/admin">Galleries</a>';
+        if (admin_can('settings')) echo '<a href="' . $base . '/admin/background">Background</a><a href="' . $base . '/admin/settings">Settings</a>';
         echo '<form method="post" action="' . $base . '/admin/logout"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button class="link-button">Sign out</button></form>';
         echo '</nav></header>';
     }
@@ -57,7 +58,7 @@ function render_welcome_screen(array $config, array $gallery): void
 function render_footer(array $config): void
 {
     $base = e((string) $config['base_path']);
-    echo '<script src="' . $base . '/assets/app.js?v=5"></script></body></html>';
+    echo '<script src="' . $base . '/assets/app.js?v=6"></script></body></html>';
 }
 
 function render_background(array $config, ?array $gallery = null): void

@@ -4,12 +4,23 @@ declare(strict_types=1);
 require __DIR__ . '/../app/helpers.php';
 require __DIR__ . '/../app/storage.php';
 require __DIR__ . '/../app/rate_limit.php';
+require __DIR__ . '/../app/setup.php';
 
 function t_assert(bool $condition, string $message): void
 {
     if (!$condition) {
         throw new RuntimeException('Assertion failed: ' . $message);
     }
+}
+
+function t_assert_throws(callable $callback, string $message): void
+{
+    try {
+        $callback();
+    } catch (Throwable) {
+        return;
+    }
+    throw new RuntimeException('Assertion failed: ' . $message);
 }
 
 function rrmdir(string $dir): void
@@ -27,9 +38,58 @@ function rrmdir(string $dir): void
     rmdir($dir);
 }
 
+function all_php_files(string $root): array
+{
+    $files = [];
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($it as $item) {
+        if ($item->isFile() && strtolower($item->getExtension()) === 'php') {
+            $files[] = $item->getPathname();
+        }
+    }
+    sort($files);
+    return $files;
+}
+
+function assert_require_targets_exist(string $repoRoot): void
+{
+    foreach (all_php_files($repoRoot) as $file) {
+        $src = (string) file_get_contents($file);
+        if (!preg_match_all('/\b(?:require|require_once)\s+([^;]+);/', $src, $matches, PREG_SET_ORDER)) {
+            continue;
+        }
+
+        foreach ($matches as $m) {
+            $expr = trim((string) $m[1]);
+            $target = null;
+
+            if (preg_match('/^__DIR__\s*\.\s*[\'\"]([^\'\"]+)[\'\"]$/', $expr, $mm)) {
+                $target = dirname($file) . '/' . $mm[1];
+            } elseif (preg_match('/^dirname\(__DIR__\)\s*\.\s*[\'\"]([^\'\"]+)[\'\"]$/', $expr, $mm)) {
+                $target = dirname(dirname($file)) . '/' . $mm[1];
+            } elseif (preg_match('/^[\'\"]([^\'\"]+)[\'\"]$/', $expr, $mm)) {
+                $target = dirname($file) . '/' . $mm[1];
+            }
+
+            if ($target !== null) {
+                t_assert(is_file($target), 'Missing required PHP file: ' . $target . ' (from ' . $file . ')');
+            }
+        }
+    }
+}
+
+function assert_bootstrap_loads(string $downloadsRoot): void
+{
+    require $downloadsRoot . '/app/bootstrap.php';
+    t_assert(isset($config) && is_array($config), 'Bootstrap should load and provide config array');
+}
+
 $testRoot = sys_get_temp_dir() . '/gallery-delivery-v020-tests-' . bin2hex(random_bytes(4));
 $diskA = $testRoot . '/disk-a';
 $diskB = $testRoot . '/disk-b';
+$downloadsRoot = dirname(__DIR__);
 
 @mkdir($diskA, 0770, true);
 @mkdir($diskB, 0770, true);
@@ -48,7 +108,42 @@ $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
 $_SESSION = [];
 
 try {
+    // Repository integrity checks.
+    assert_require_targets_exist($downloadsRoot);
+    assert_bootstrap_loads($downloadsRoot);
+
+    $requiredFunctions = [
+        'route_path', 'request_method', 'app_is_installed', 'setup_checks', 'setup_has_blockers',
+        'verify_csrf', 'complete_initial_setup', 'render_setup_page', 'redirect_to', 'ensure_storage_layout',
+        'is_admin', 'render_header', 'render_footer', 'render_flashes', 'list_galleries', 'base_url',
+        'csrf_token', 'format_bytes', 'format_last_access', 'flash', 'rate_limit_remaining_seconds',
+        'rate_limit_reset', 'rate_limit_register_failure', 'require_admin', 'random_password',
+        'is_primary_admin', 'require_primary_admin', 'normalize_admin_username', 'is_valid_admin_username', 'admin_users', 'admin_roles', 'admin_can',
+        'create_gallery', 'load_gallery', 'gallery_admin_password', 'absolute_url', 'current_background',
+        'rename_gallery', 'save_gallery_background', 'save_background_upload', 'save_background_url',
+        'gallery_record_event', 'set_gallery_unlocked', 'gallery_is_unlocked', 'send_file_response',
+        'ensure_gallery_zip_ready', 'build_gallery_zip', 'remove_photo', 'delete_gallery', 'aperture_icon',
+    ];
+    foreach ($requiredFunctions as $fn) {
+        t_assert(function_exists($fn), 'Expected function is missing: ' . $fn);
+    }
+
     ensure_storage_layout($config);
+
+    t_assert(
+        app_settings_path($config) === $diskA . '/_app/settings.json',
+        'Application settings must live on the writable storage disk'
+    );
+
+    // Administrator accounts: old single-password installations migrate to permanent admin.
+    $legacyAdminHash = secure_password_hash('LegacyAdmin123');
+    $legacyUsers = admin_users(['admin_password_hash' => $legacyAdminHash]);
+    t_assert(isset($legacyUsers['admin']), 'Legacy admin hash must migrate to the admin account');
+    t_assert(password_verify('LegacyAdmin123', (string) $legacyUsers['admin']['password_hash']), 'Migrated admin password must verify');
+    t_assert($legacyUsers['admin']['role'] === 'full', 'Primary admin must retain full access');
+    t_assert(normalize_admin_username(' Editor.One ') === 'editor.one', 'Admin usernames must normalize consistently');
+    t_assert(is_valid_admin_username('editor.one'), 'Valid administrator username should be accepted');
+    t_assert(!is_valid_admin_username('ab'), 'Short administrator username should be rejected');
 
     // Multi-disk: create on A then on B, both must remain accessible.
     $galleryA = [
@@ -99,6 +194,42 @@ try {
     t_assert(in_array((string) $galleryA['id'], $ids, true), 'Dashboard listing must include gallery from disk A');
     t_assert(in_array((string) $galleryB['id'], $ids, true), 'Dashboard listing must include gallery from disk B');
 
+    // New gallery creation must use active disk.
+    if (extension_loaded('openssl')) {
+        $createdOnActive = create_gallery($config, 'CreatedOnB123', 'Created on active disk B');
+        $createdPath = gallery_dir($config, (string) $createdOnActive['id']);
+    } else {
+        $candidateUuid = uuid_v4();
+        $createdPath = gallery_dir($config, $candidateUuid, true);
+    }
+    t_assert(str_starts_with(str_replace('\\\\', '/', $createdPath), str_replace('\\\\', '/', $diskB) . '/'), 'New gallery must be created on active disk B');
+
+    // Duplicate UUID conflict must be detected safely.
+    $duplicateUuid = uuid_v4();
+    $dupA = $diskA . '/' . $duplicateUuid;
+    $dupB = $diskB . '/' . $duplicateUuid;
+    @mkdir($dupA . '/originals', 0770, true);
+    @mkdir($dupA . '/previews', 0770, true);
+    @mkdir($dupB . '/originals', 0770, true);
+    @mkdir($dupB . '/previews', 0770, true);
+    write_json_file($dupA . '/gallery.json', [
+        'id' => $duplicateUuid,
+        'password_hash' => secure_password_hash('x'),
+        'created_at' => date(DATE_ATOM),
+        'updated_at' => date(DATE_ATOM),
+        'files' => [],
+        'zip' => ['ready' => false, 'dirty' => true, 'updated_at' => null, 'size' => 0],
+    ]);
+    write_json_file($dupB . '/gallery.json', [
+        'id' => $duplicateUuid,
+        'password_hash' => secure_password_hash('x'),
+        'created_at' => date(DATE_ATOM),
+        'updated_at' => date(DATE_ATOM),
+        'files' => [],
+        'zip' => ['ready' => false, 'dirty' => true, 'updated_at' => null, 'size' => 0],
+    ]);
+    t_assert_throws(static fn() => find_gallery_storage($config, $duplicateUuid), 'Duplicate gallery UUID across disks must fail safely');
+
     // Auth: unlock + invalidation by auth_version.
     $galleryA = load_gallery($config, (string) $galleryA['id']);
     t_assert($galleryA !== null, 'Reload gallery A');
@@ -107,6 +238,17 @@ try {
 
     set_gallery_unlocked($galleryA);
     t_assert(gallery_is_unlocked($config, $galleryA), 'Gallery unlock should succeed');
+
+    // Unlock TTL should expire.
+    $key = gallery_session_key((string) $galleryA['id']);
+    t_assert(isset($_SESSION[$key]) && is_array($_SESSION[$key]), 'Unlock session payload should exist');
+    $_SESSION[$key]['unlocked_at'] = time() - 301;
+    $ttlConfig = $config;
+    $ttlConfig['gallery_unlock_ttl'] = 300;
+    t_assert(!gallery_is_unlocked($ttlConfig, $galleryA), 'Unlock session should expire after TTL');
+
+    set_gallery_unlocked($galleryA);
+    t_assert(gallery_is_unlocked($config, $galleryA), 'Gallery unlock should work again after re-unlock');
 
     $galleryA['auth_version'] = gallery_auth_version($galleryA) + 1;
     t_assert(!gallery_is_unlocked($config, $galleryA), 'Unlock session must be invalid after auth_version change');
@@ -139,6 +281,7 @@ try {
     $galleryB = refresh_gallery_storage_stats($config, $galleryB, false);
     $galleryB = mark_gallery_zip_dirty($config, $galleryB);
     save_gallery($config, $galleryB);
+    t_assert(!is_file($dirB . '/full.zip'), 'Changing photos must not eagerly rebuild ZIP');
 
     $galleryB = load_gallery($config, (string) $galleryB['id']);
     t_assert(!empty($galleryB['zip']['dirty']), 'ZIP should be marked dirty after change');
@@ -153,20 +296,60 @@ try {
         $galleryB = ensure_gallery_zip_ready($config, $galleryB);
         $mtimeAfter = (int) filemtime($zipPath);
         t_assert($mtimeAfter === $mtimeBefore, 'Existing valid ZIP should be reused');
+
+        $zipOpen = new ZipArchive();
+        t_assert($zipOpen->open($zipPath) === true, 'Generated ZIP must be readable');
+        $zipOpen->close();
+        t_assert(!(bool) glob($dirB . '/full.zip.tmp-*'), 'Temporary ZIP artifacts must not remain after successful build');
     }
 
     // Delete should decrease counts and mark zip outdated.
+    $oldZipMtime = is_file($dirB . '/full.zip') ? (int) filemtime($dirB . '/full.zip') : 0;
     $galleryB = remove_photo($config, $galleryB, 'a1');
     t_assert(count($galleryB['files']) === 1, 'Photo delete should remove item');
     t_assert((int) ($galleryB['storage']['file_count'] ?? 0) === 1, 'File count cache should decrease after delete');
     t_assert(!empty($galleryB['zip']['dirty']), 'ZIP must be marked outdated after delete');
+    t_assert(!is_file($dirB . '/full.zip'), 'Deleting a photo should not rebuild ZIP immediately');
+    if ($oldZipMtime > 0) {
+        t_assert(!is_file($dirB . '/full.zip') || (int) filemtime($dirB . '/full.zip') === $oldZipMtime, 'Delete operation must not perform eager ZIP rebuild');
+    }
+
+    // Operations should target gallery real disk, not only active disk.
+    $galleryA = load_gallery($config, (string) $galleryA['id']);
+    t_assert($galleryA !== null, 'Reload gallery A for cross-disk operation test');
+    $dirAReal = gallery_dir($config, (string) $galleryA['id']);
+    $aOriginal = $dirAReal . '/originals/real-a.jpg';
+    file_put_contents($aOriginal, str_repeat('R', 512));
+    $galleryA['files'] = [[
+        'id' => 'ra1',
+        'stored_name' => 'real-a.jpg',
+        'original_name' => 'real-a.jpg',
+        'mime' => 'image/jpeg',
+        'size' => 512,
+        'preview' => null,
+    ]];
+    $galleryA = refresh_gallery_storage_stats($config, $galleryA, false);
+    save_gallery($config, $galleryA);
+    $galleryA = remove_photo($config, $galleryA, 'ra1');
+    t_assert(!is_file($aOriginal), 'Delete must target original file on gallery real disk');
 
     // Old-gallery stats bootstrap: remove storage and force reload.
-    $raw = read_json_file(gallery_json_path($config, (string) $galleryB['id']));
+    $jsonPathB = gallery_json_path($config, (string) $galleryB['id']);
+    $raw = read_json_file($jsonPathB);
+    t_assert(is_array($raw), 'Gallery B JSON should be readable for stats bootstrap test');
     unset($raw['storage']);
-    write_json_file(gallery_json_path($config, (string) $galleryB['id']), $raw);
+    write_json_file($jsonPathB, $raw);
     $galleryB = load_gallery($config, (string) $galleryB['id']);
     t_assert(isset($galleryB['storage']['file_count']), 'Old gallery without cached stats should be initialized');
+
+    // Repeated unchanged load should not rewrite gallery JSON repeatedly.
+    clearstatcache(true, $jsonPathB);
+    $mtime1 = (int) filemtime($jsonPathB);
+    usleep(200000);
+    $galleryB = load_gallery($config, (string) $galleryB['id']);
+    clearstatcache(true, $jsonPathB);
+    $mtime2 = (int) filemtime($jsonPathB);
+    t_assert($mtime2 === $mtime1, 'Repeated load of unchanged gallery should reuse cached stats without rewriting gallery.json');
 
     echo "OK: all smoke checks passed\n";
 } finally {

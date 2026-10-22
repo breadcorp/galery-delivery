@@ -12,6 +12,7 @@ if (is_file($localConfig)) {
 
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/storage.php';
+require_once __DIR__ . '/rate_limit.php';
 require_once __DIR__ . '/views.php';
 require_once __DIR__ . '/setup.php';
 
@@ -30,6 +31,7 @@ if ($settings) {
     $config = array_replace($config, [
         'setup_complete' => !empty($settings['setup_complete']),
         'admin_password_hash' => (string) ($settings['admin_password_hash'] ?? ''),
+        'admin_users' => (array) ($settings['admin_users'] ?? []),
         'app_secret' => (string) ($settings['app_secret'] ?? $config['app_secret'] ?? ''),
         'storage_root' => resolve_storage_root($config, $settings),
         'storage_disks' => $storageDisks,

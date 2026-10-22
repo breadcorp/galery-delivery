@@ -3,12 +3,12 @@ declare(strict_types=1);
 
 function app_settings_path(array $config): string
 {
-    return dirname(__DIR__) . '/app/settings.json';
+    return rtrim((string) $config['storage_root'], '/') . '/_app/settings.json';
 }
 
 function legacy_app_settings_path(array $config): string
 {
-    return rtrim((string) $config['storage_root'], '/') . '/_app/settings.json';
+    return dirname(__DIR__) . '/app/settings.json';
 }
 
 function load_app_settings(array $config): array
@@ -45,16 +45,17 @@ function write_app_settings(array $config, array $settings): void
         throw new RuntimeException('The application settings could not be saved.');
     }
 
+    // An old app-local settings file may exist after an upgrade. Updating it is
+    // optional because deployed application files are commonly read-only.
     $legacyPath = legacy_app_settings_path($config);
     $legacyDir = dirname($legacyPath);
-    if (!is_dir($legacyDir)) {
-        @mkdir($legacyDir, 0770, true);
-    }
-    $legacyTmp = $legacyPath . '.tmp-' . bin2hex(random_bytes(6));
-    if (@file_put_contents($legacyTmp, $json . PHP_EOL, LOCK_EX) !== false) {
-        @chmod($legacyTmp, 0660);
-        if (!@rename($legacyTmp, $legacyPath)) {
-            @unlink($legacyTmp);
+    if (is_dir($legacyDir) && is_writable($legacyDir)) {
+        $legacyTmp = $legacyPath . '.tmp-' . bin2hex(random_bytes(6));
+        if (@file_put_contents($legacyTmp, $json . PHP_EOL, LOCK_EX) !== false) {
+            @chmod($legacyTmp, 0660);
+            if (!@rename($legacyTmp, $legacyPath)) {
+                @unlink($legacyTmp);
+            }
         }
     }
 }
@@ -213,9 +214,11 @@ function complete_initial_setup(array $config, string $password): void
             throw new RuntimeException('Initial setup has already been completed.');
         }
 
+        $adminPasswordHash = secure_password_hash($password);
         $settings = array_merge(load_app_settings($config), [
             'setup_complete' => true,
-            'admin_password_hash' => secure_password_hash($password),
+            'admin_password_hash' => $adminPasswordHash,
+            'admin_users' => ['admin' => ['password_hash' => $adminPasswordHash, 'role' => 'full']],
             'app_secret' => base64_encode(random_bytes(32)),
             'installed_at' => date(DATE_ATOM),
             'storage_disks' => array_values(array_unique(array_filter([(string) $config['storage_root']], fn($disk) => $disk !== ''))),

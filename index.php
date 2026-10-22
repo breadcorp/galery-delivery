@@ -35,6 +35,8 @@ try {
             complete_initial_setup($config, $password);
             session_regenerate_id(true);
             $_SESSION['admin_authenticated'] = true;
+            $_SESSION['admin_username'] = 'admin';
+            $_SESSION['admin_role'] = 'full';
             flash('success', 'Setup completed.');
             redirect_to($config, 'admin');
         }
@@ -58,6 +60,7 @@ try {
                 echo '<div class="flash error">Setup is not complete. Open the main address <code>' . e(base_url($config)) . '</code>.</div>';
             }
             echo '<form method="post" action="' . e(base_url($config, 'admin/login')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '">';
+            echo '<label>Username<input type="text" name="username" required autocomplete="username" value="admin" autofocus></label>';
             echo '<label>Password<input type="password" name="password" required autocomplete="current-password" autofocus></label>';
             echo '<button class="primary wide">Sign in</button></form></main>';
             render_footer($config);
@@ -68,7 +71,10 @@ try {
         $total = @disk_total_space((string) $config['storage_root']);
         render_header($config, 'Galleries', true, 'admin-page');
         echo '<main class="container">'; render_flashes();
-        echo '<section class="hero-card"><div><p class="eyebrow">Overview</p><h1>Galleries and storage</h1><p class="muted">Manage photos, ZIP files, and the active storage disk from one place.</p></div><div class="hero-actions"><a class="button" href="' . e(base_url($config, 'admin/settings')) . '">Settings</a><a class="button primary" href="' . e(base_url($config, 'admin/create')) . '">New gallery</a></div></section>';
+        echo '<section class="hero-card"><div><p class="eyebrow">Overview</p><h1>Galleries and storage</h1><p class="muted">Manage photos, ZIP files, and the active storage disk from one place.</p></div><div class="hero-actions">';
+        if (admin_can('settings')) echo '<a class="button" href="' . e(base_url($config, 'admin/settings')) . '">Settings</a>';
+        if (admin_can('edit')) echo '<a class="button primary" href="' . e(base_url($config, 'admin/create')) . '">New gallery</a>';
+        echo '</div></section>';
         if ($free !== false && $total !== false) {
             $usedPct = $total > 0 ? (int) round((1 - $free / $total) * 100) : 0;
             echo '<section class="storage-card"><div><strong>Active disk</strong><span>' . e((string) $config['storage_root']) . '</span></div><div class="storage-right">' . format_bytes((int) $free) . ' free · ' . $usedPct . '% used</div></section>';
@@ -102,15 +108,19 @@ try {
 
     if ($path === '/admin/login' && $method === 'POST') {
         verify_csrf();
+        $username = normalize_admin_username((string) ($_POST['username'] ?? ''));
         $password = (string) ($_POST['password'] ?? '');
         $remaining = rate_limit_remaining_seconds($config, 'admin_login');
         if ($remaining > 0) {
-            flash('error', 'Too many attempts. Please try again later.');
+            flash('error', 'Too many attempts. Please try again in ' . format_retry_after($remaining) . '.');
             redirect_to($config, 'admin');
         }
-        if (!empty($config['admin_password_hash']) && password_verify($password, (string) $config['admin_password_hash'])) {
+        $users = admin_users($config);
+        if (isset($users[$username]) && password_verify($password, (string) $users[$username]['password_hash'])) {
             session_regenerate_id(true);
             $_SESSION['admin_authenticated'] = true;
+            $_SESSION['admin_username'] = $username;
+            $_SESSION['admin_role'] = (string) $users[$username]['role'];
             rate_limit_reset($config, 'admin_login');
             redirect_to($config, 'admin');
         }
@@ -121,13 +131,13 @@ try {
 
     if ($path === '/admin/logout' && $method === 'POST') {
         verify_csrf();
-        unset($_SESSION['admin_authenticated']);
+        unset($_SESSION['admin_authenticated'], $_SESSION['admin_username']);
         session_regenerate_id(true);
         redirect_to($config, 'admin');
     }
 
     if ($path === '/admin/create' && $method === 'GET') {
-        require_admin($config);
+        require_admin_permission($config, 'edit');
         $generated = random_password();
         render_header($config, 'New gallery', true, 'admin-page');
         echo '<main class="container narrow">'; render_flashes();
@@ -140,7 +150,7 @@ try {
     }
 
     if ($path === '/admin/create' && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'edit'); verify_csrf();
         $password = trim((string) ($_POST['password'] ?? ''));
         if (app_strlen($password) < 8) throw new RuntimeException('The password must be at least 8 characters long.');
         $gallery = create_gallery($config, $password, (string) ($_POST['name'] ?? ''));
@@ -157,8 +167,10 @@ try {
         $galleryName = trim((string) ($gallery['name'] ?? ''));
         echo '<main class="container">'; render_flashes();
         echo '<section class="top-row"><div><h1>' . e($galleryName !== '' ? $galleryName : 'Gallery details') . '</h1><code>' . e($uuid) . '</code></div><a class="button" target="_blank" rel="noopener" href="' . e(base_url($config, $uuid)) . '">Open gallery</a></section>';
-        echo '<section class="panel"><h2>Gallery name</h2><p class="muted">Shown to the customer on the welcome screen. Leave empty to show none.</p>';
-        echo '<form class="inline-form" method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/name')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label>Name<input type="text" name="name" maxlength="120" placeholder="e.g. Wedding Novák & Svobodová" value="' . e($galleryName) . '"></label><button class="primary">Save name</button></form></section>';
+        if (admin_can('edit')) {
+            echo '<section class="panel"><h2>Gallery name</h2><p class="muted">Shown to the customer on the welcome screen. Leave empty to show none.</p>';
+            echo '<form class="inline-form" method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/name')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label>Name<input type="text" name="name" maxlength="120" placeholder="e.g. Wedding Novák & Svobodová" value="' . e($galleryName) . '"></label><button class="primary">Save name</button></form></section>';
+        }
         echo '<div class="secret-box"><strong>Public link</strong><div><code id="gallery-link">' . e(absolute_url($config, $uuid)) . '</code><button type="button" class="small" data-copy="#gallery-link">Copy</button></div></div>';
         if ($shownPassword !== null) {
             echo '<div class="secret-box"><strong>Gallery password</strong><div><code id="gallery-password">' . e($shownPassword) . '</code><button type="button" class="small" data-copy="#gallery-password">Copy</button></div></div>';
@@ -167,13 +179,15 @@ try {
         }
         $storage = is_array($gallery['storage'] ?? null) ? $gallery['storage'] : [];
         echo '<section class="stats-grid"><div><span>Photos</span><strong>' . count($gallery['files'] ?? []) . '</strong></div><div><span>Views</span><strong>' . (int) ($gallery['views'] ?? 0) . '</strong></div><div><span>Unlocks</span><strong>' . (int) ($gallery['unlocks'] ?? 0) . '</strong></div><div><span>Photo downloads</span><strong>' . (int) ($gallery['photo_downloads'] ?? 0) . '</strong></div><div><span>ZIP downloads</span><strong>' . (int) ($gallery['zip_downloads'] ?? 0) . '</strong></div><div><span>Last access</span><strong>' . e(format_last_access(isset($gallery['last_access_at']) ? (string) $gallery['last_access_at'] : null)) . '</strong></div><div><span>Storage</span><strong>' . format_bytes((int) ($gallery['_disk_bytes'] ?? 0)) . '</strong></div><div><span>Disk</span><strong>' . e((string) ($gallery['_storage_label'] ?? ($gallery['_storage_root'] ?? 'unknown'))) . '</strong></div><div><span>ZIP</span><strong>' . (!empty($gallery['zip']['ready']) ? format_bytes((int) $gallery['zip']['size']) : (!empty($gallery['zip']['dirty']) ? 'outdated' : 'none')) . '</strong></div><div><span>Status</span><strong>' . (!empty($gallery['active']) ? 'Active' : 'Disabled') . '</strong></div><div><span>Cached files</span><strong>' . (int) ($storage['file_count'] ?? count($gallery['files'] ?? [])) . '</strong></div><div><span>ZIP state</span><strong>' . (!empty($gallery['zip']['dirty']) ? 'dirty' : 'current') . '</strong></div></section>';
-        echo '<section class="panel"><h2>Upload photos</h2><p class="muted">JPG, PNG, or WebP, up to 200 MB per file.</p>';
-        echo '<form method="post" enctype="multipart/form-data" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/upload')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label class="dropzone">Select photos<input type="file" name="photos[]" accept="image/jpeg,image/png,image/webp" multiple required></label><button class="primary">Upload photos</button></form></section>';
+        if (admin_can('edit')) {
+            echo '<section class="panel"><h2>Upload photos</h2><p class="muted">JPG, PNG, WebP, or RAW (DNG, CR2/CR3, NEF, ARW, RAF, ORF, RW2, PEF), up to 200 MB per file. RAW files are provided for download without a browser preview.</p>';
+            echo '<form method="post" enctype="multipart/form-data" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/upload')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label class="dropzone">Select photos<input type="file" name="photos[]" accept="image/jpeg,image/png,image/webp,.dng,.cr2,.cr3,.nef,.arw,.raf,.orf,.rw2,.pef,.3fr,.iiq,.x3f" multiple required></label><button class="primary">Upload photos</button></form></section>';
+        }
         $galleryBackground = is_array($gallery['background'] ?? null) ? $gallery['background'] : ['mode' => 'global'];
         $backgroundMode = (($galleryBackground['mode'] ?? 'global') === 'custom') ? 'custom' : 'global';
         $customBackgroundUrl = $backgroundMode === 'custom' ? (string) ($galleryBackground['url'] ?? '') : '';
         $globalBackground = current_background($config);
-        echo '<section class="panel"><h2>Gallery background</h2><p class="muted">The gallery can use the global background or a custom direct HTTPS GIF link.</p>';
+        if (admin_can('edit')) echo '<section class="panel"><h2>Gallery background</h2><p class="muted">The gallery can use the global background or a custom direct HTTPS GIF link.</p>';
         if ($globalBackground && ($globalBackground['source'] ?? '') === 'url') {
             echo '<p class="muted">Global GIF: <code>' . e((string) ($globalBackground['url'] ?? '')) . '</code></p>';
         } elseif ($globalBackground) {
@@ -181,29 +195,37 @@ try {
         } else {
             echo '<p class="muted">No global background is set yet.</p>';
         }
-        echo '<form method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/background')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '">';
-        echo '<label>Background mode<select name="background_mode"><option value="global"' . ($backgroundMode === 'global' ? ' selected' : '') . '>Use global background</option><option value="custom"' . ($backgroundMode === 'custom' ? ' selected' : '') . '>Custom GIF for this gallery</option></select></label>';
-        echo '<label>Custom HTTPS GIF link<input type="url" name="background_url" maxlength="2048" placeholder="https://example.com/auto.gif" value="' . e($customBackgroundUrl) . '"></label>';
-        echo '<button>Save gallery background</button></form></section>';
-        echo '<section class="actions panel"><h2>Settings</h2><div class="action-row">';
-        echo '<form method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/toggle')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button>' . (!empty($gallery['active']) ? 'Deactivate link' : 'Activate link') . '</button></form>';
-        echo '<form method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/zip')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button>Regenerate ZIP</button></form></div>';
-        echo '<form class="inline-form" method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/password')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label>New password<input type="text" name="password" minlength="8" maxlength="100" value="' . e(random_password()) . '" required></label><button>Change password</button></form>';
-        echo '<form class="danger-zone" method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/delete')) . '" data-confirm="Really delete the gallery including all photos?"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button class="danger">Delete gallery</button></form></section>';
+        if (admin_can('edit')) {
+            echo '<form method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/background')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '">';
+            echo '<label>Background mode<select name="background_mode"><option value="global"' . ($backgroundMode === 'global' ? ' selected' : '') . '>Use global background</option><option value="custom"' . ($backgroundMode === 'custom' ? ' selected' : '') . '>Custom GIF for this gallery</option></select></label>';
+            echo '<label>Custom HTTPS GIF link<input type="url" name="background_url" maxlength="2048" placeholder="https://example.com/auto.gif" value="' . e($customBackgroundUrl) . '"></label>';
+            echo '<button>Save gallery background</button></form></section>';
+            echo '<section class="actions panel"><h2>Settings</h2><div class="action-row">';
+            echo '<form method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/toggle')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button>' . (!empty($gallery['active']) ? 'Deactivate link' : 'Activate link') . '</button></form>';
+            echo '<form method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/zip')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button>Regenerate ZIP</button></form></div>';
+            echo '<form class="inline-form" method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/password')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label>New password<input type="text" name="password" minlength="8" maxlength="100" value="' . e(random_password()) . '" required></label><button>Change password</button></form>';
+            if (admin_can('delete')) echo '<form class="danger-zone" method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/delete')) . '" data-confirm="Really delete the gallery including all photos?"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button class="danger">Delete gallery</button></form>';
+            echo '</section>';
+        }
         echo '<section><h2>Photos</h2><div class="admin-photo-grid">';
         if (empty($gallery['files'])) echo '<div class="empty">The gallery is empty.</div>';
         $frame = 0;
         foreach ($gallery['files'] ?? [] as $file) {
             $frame++;
             $fid = (string) $file['id'];
-            echo '<article class="admin-photo"><div class="admin-photo-media"><span class="frame-no">' . str_pad((string) $frame, 2, '0', STR_PAD_LEFT) . '</span><img loading="lazy" src="' . e(base_url($config, $uuid . '/preview/' . $fid . '?admin=1')) . '" alt=""></div><div><strong title="' . e((string) $file['original_name']) . '">' . e((string) $file['original_name']) . '</strong><span>' . format_bytes((int) $file['size']) . '</span></div><form method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/photo/' . $fid . '/delete')) . '" data-confirm="Delete this photo?"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button class="danger small">Delete</button></form></article>';
+            echo '<article class="admin-photo"><div class="admin-photo-media"><span class="frame-no">' . str_pad((string) $frame, 2, '0', STR_PAD_LEFT) . '</span>';
+            if (!empty($file['preview'])) echo '<img loading="lazy" src="' . e(base_url($config, $uuid . '/preview/' . $fid . '?admin=1')) . '" alt="">';
+            else echo '<span class="raw-file">RAW<br>' . e(strtoupper(pathinfo((string) $file['original_name'], PATHINFO_EXTENSION))) . '</span>';
+            echo '</div><div><strong title="' . e((string) $file['original_name']) . '">' . e((string) $file['original_name']) . '</strong><span>' . format_bytes((int) $file['size']) . '</span></div>';
+            if (admin_can('delete')) echo '<form method="post" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/photo/' . $fid . '/delete')) . '" data-confirm="Delete this photo?"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button class="danger small">Delete</button></form>';
+            echo '</article>';
         }
         echo '</div></section></main>';
         render_footer($config); exit;
     }
 
     if (preg_match('#^/admin/gallery/([0-9a-f-]+)/upload$#i', $path, $m) && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'edit'); verify_csrf();
         $gallery = load_gallery($config, $m[1]); if (!$gallery) throw new RuntimeException('Gallery not found.');
         if (empty($_FILES['photos'])) throw new RuntimeException('No file was selected.');
         $gallery = add_uploaded_photos($config, $gallery, $_FILES['photos']);
@@ -212,7 +234,7 @@ try {
     }
 
     if (preg_match('#^/admin/gallery/([0-9a-f-]+)/toggle$#i', $path, $m) && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'edit'); verify_csrf();
         $gallery = load_gallery($config, $m[1]); if (!$gallery) throw new RuntimeException('Gallery not found.');
         $gallery['active'] = empty($gallery['active']); save_gallery($config, $gallery);
         flash('success', $gallery['active'] ? 'The gallery is active.' : 'The gallery was deactivated.');
@@ -220,14 +242,14 @@ try {
     }
 
     if (preg_match('#^/admin/gallery/([0-9a-f-]+)/zip$#i', $path, $m) && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'edit'); verify_csrf();
         $gallery = load_gallery($config, $m[1]); if (!$gallery) throw new RuntimeException('Gallery not found.');
         build_gallery_zip($config, $gallery, true); flash('success', 'ZIP was created.');
         redirect_to($config, 'admin/gallery/' . $gallery['id']);
     }
 
     if (preg_match('#^/admin/gallery/([0-9a-f-]+)/background$#i', $path, $m) && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'edit'); verify_csrf();
         $gallery = load_gallery($config, $m[1]); if (!$gallery) throw new RuntimeException('Gallery not found.');
         $mode = (string) ($_POST['background_mode'] ?? 'global');
         $url = (string) ($_POST['background_url'] ?? '');
@@ -237,7 +259,7 @@ try {
     }
 
     if (preg_match('#^/admin/gallery/([0-9a-f-]+)/name$#i', $path, $m) && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'edit'); verify_csrf();
         $gallery = load_gallery($config, $m[1]); if (!$gallery) throw new RuntimeException('Gallery not found.');
         rename_gallery($config, $gallery, (string) ($_POST['name'] ?? ''));
         flash('success', 'The gallery name was saved.');
@@ -245,7 +267,7 @@ try {
     }
 
     if (preg_match('#^/admin/gallery/([0-9a-f-]+)/password$#i', $path, $m) && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'edit'); verify_csrf();
         $gallery = load_gallery($config, $m[1]); if (!$gallery) throw new RuntimeException('Gallery not found.');
         $password = trim((string) ($_POST['password'] ?? ''));
         if (app_strlen($password) < 8) throw new RuntimeException('The password must be at least 8 characters long.');
@@ -258,12 +280,12 @@ try {
     }
 
     if (preg_match('#^/admin/gallery/([0-9a-f-]+)/delete$#i', $path, $m) && $method === 'POST') {
-        require_admin($config); verify_csrf(); delete_gallery($config, $m[1]);
+        require_admin_permission($config, 'delete'); verify_csrf(); delete_gallery($config, $m[1]);
         flash('success', 'The gallery was deleted.'); redirect_to($config, 'admin');
     }
 
     if (preg_match('#^/admin/gallery/([0-9a-f-]+)/photo/([0-9a-f]+)/delete$#i', $path, $m) && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'delete'); verify_csrf();
         $gallery = load_gallery($config, $m[1]); if (!$gallery) throw new RuntimeException('Gallery not found.');
         $gallery = remove_photo($config, $gallery, $m[2]);
         flash('success', 'The photo was deleted. ZIP is now marked outdated and will be rebuilt on the next Download all request.');
@@ -271,7 +293,7 @@ try {
     }
 
     if ($path === '/admin/settings' && $method === 'GET') {
-        require_admin($config);
+        require_admin_permission($config, 'settings');
         $settings = load_app_settings($config);
         $disks = array_values(array_unique(array_filter(array_map(fn($disk) => trim((string) $disk), (array) ($settings['storage_disks'] ?? [])), fn($disk) => $disk !== '')));
         if (!$disks) {
@@ -282,9 +304,35 @@ try {
             $activeDisk = $disks[0];
         }
         $appName = (string) ($settings['app_name'] ?? $config['app_name'] ?? 'Downloads');
+        $users = admin_users(array_replace($config, ['admin_users' => (array) ($settings['admin_users'] ?? [])]));
+        $roles = admin_roles();
         render_header($config, 'Settings', true, 'admin-page');
         echo '<main class="container narrow">'; render_flashes();
-        echo '<section class="hero-card"><div><p class="eyebrow">Settings</p><h1>Disks and basic settings</h1><p class="muted">Add additional disks and choose the active storage location for new galleries.</p></div></section>';
+        echo '<section class="hero-card"><div><p class="eyebrow">Settings</p><h1>Disks, accounts and basic settings</h1><p class="muted">Manage storage locations and administrator access for the gallery dashboard.</p></div></section>';
+        if (is_primary_admin()) {
+            echo '<section class="panel"><h2>Administrator accounts</h2><p class="muted">The <code>admin</code> account is permanent. You can add more accounts with the same dashboard access.</p>';
+            foreach ($users as $username => $user) {
+                $isPrimary = $username === 'admin';
+                $role = (string) $user['role'];
+                echo '<article class="disk-card' . ($isPrimary ? ' active' : '') . '"><div><strong>' . e($username) . '</strong><small>' . ($isPrimary ? 'Permanent primary administrator' : ($roles[$role] ?? 'Download only')) . '</small></div><span class="pill' . ($isPrimary ? ' active' : '') . '">' . ($isPrimary ? 'Primary' : e($roles[$role] ?? 'Download only')) . '</span></article>';
+                if (!$isPrimary) {
+                    echo '<form method="post" action="' . e(base_url($config, 'admin/settings/users/' . rawurlencode($username) . '/role')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label>Role for ' . e($username) . '<select name="role">';
+                    foreach ($roles as $roleKey => $roleLabel) {
+                        echo '<option value="' . e($roleKey) . '"' . ($role === $roleKey ? ' selected' : '') . '>' . e($roleLabel) . '</option>';
+                    }
+                    echo '</select></label><button class="small">Save role</button></form>';
+                }
+                echo '<form method="post" action="' . e(base_url($config, 'admin/settings/users/' . rawurlencode($username) . '/password')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label>New password for ' . e($username) . '<input type="password" name="password" minlength="10" autocomplete="new-password" required></label><button class="small">Change password</button></form>';
+                if (!$isPrimary) {
+                    echo '<form method="post" action="' . e(base_url($config, 'admin/settings/users/' . rawurlencode($username) . '/delete')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><button class="small danger">Remove ' . e($username) . '</button></form>';
+                }
+            }
+            echo '<form method="post" action="' . e(base_url($config, 'admin/settings/users')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label>New username<input type="text" name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" autocomplete="username" required></label><label>Role<select name="role">';
+            foreach ($roles as $role => $label) {
+                echo '<option value="' . e($role) . '">' . e($label) . '</option>';
+            }
+            echo '</select></label><label>Password<input type="password" name="password" minlength="10" autocomplete="new-password" required></label><label>Confirm password<input type="password" name="password_confirmation" minlength="10" autocomplete="new-password" required></label><button class="primary">Add administrator</button></form></section>';
+        }
         echo '<section class="panel"><h2>Active disk</h2><div class="disk-list">';
         foreach ($disks as $disk) {
             $isActive = $disk === $activeDisk;
@@ -301,7 +349,7 @@ try {
     }
 
     if ($path === '/admin/settings' && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'settings'); verify_csrf();
         $settings = load_app_settings($config);
         $disks = array_values(array_unique(array_filter(array_map(fn($disk) => trim((string) $disk), (array) ($settings['storage_disks'] ?? [])), fn($disk) => $disk !== '')));
         if (!$disks) {
@@ -324,8 +372,94 @@ try {
         redirect_to($config, 'admin/settings');
     }
 
+    if ($path === '/admin/settings/users' && $method === 'POST') {
+        require_primary_admin($config); verify_csrf();
+        $username = normalize_admin_username((string) ($_POST['username'] ?? ''));
+        $role = normalize_admin_role((string) ($_POST['role'] ?? 'download'));
+        $password = (string) ($_POST['password'] ?? '');
+        $confirmation = (string) ($_POST['password_confirmation'] ?? '');
+        if (!is_valid_admin_username($username)) {
+            throw new RuntimeException('Username must be 3-32 characters and contain only letters, numbers, dots, dashes, or underscores.');
+        }
+        if (app_strlen($password) < 10) {
+            throw new RuntimeException('The password must be at least 10 characters long.');
+        }
+        if (!hash_equals($password, $confirmation)) {
+            throw new RuntimeException('The entered passwords do not match.');
+        }
+        $settings = load_app_settings($config);
+        $users = admin_users(array_replace($config, ['admin_users' => (array) ($settings['admin_users'] ?? [])]));
+        if (isset($users[$username])) {
+            throw new RuntimeException('This username already exists.');
+        }
+        $users[$username] = ['password_hash' => secure_password_hash($password), 'role' => $role];
+        $settings = array_merge($settings, ['admin_users' => $users, 'updated_at' => date(DATE_ATOM)]);
+        write_app_settings($config, $settings);
+        flash('success', 'Administrator account ' . $username . ' was added.');
+        redirect_to($config, 'admin/settings');
+    }
+
+    if (preg_match('#^/admin/settings/users/([a-z0-9._-]+)/password$#i', $path, $m) && $method === 'POST') {
+        require_primary_admin($config); verify_csrf();
+        $username = normalize_admin_username($m[1]);
+        $password = (string) ($_POST['password'] ?? '');
+        if (app_strlen($password) < 10) {
+            throw new RuntimeException('The password must be at least 10 characters long.');
+        }
+        $settings = load_app_settings($config);
+        $users = admin_users(array_replace($config, ['admin_users' => (array) ($settings['admin_users'] ?? [])]));
+        if (!isset($users[$username])) {
+            throw new RuntimeException('Administrator account not found.');
+        }
+        $users[$username]['password_hash'] = secure_password_hash($password);
+        $settings = array_merge($settings, [
+            'admin_users' => $users,
+            'admin_password_hash' => (string) $users['admin']['password_hash'],
+            'updated_at' => date(DATE_ATOM),
+        ]);
+        write_app_settings($config, $settings);
+        flash('success', 'Password for ' . $username . ' was changed.');
+        redirect_to($config, 'admin/settings');
+    }
+
+    if (preg_match('#^/admin/settings/users/([a-z0-9._-]+)/role$#i', $path, $m) && $method === 'POST') {
+        require_primary_admin($config); verify_csrf();
+        $username = normalize_admin_username($m[1]);
+        if ($username === 'admin') {
+            throw new RuntimeException('The primary admin account always has full access.');
+        }
+        $settings = load_app_settings($config);
+        $users = admin_users(array_replace($config, ['admin_users' => (array) ($settings['admin_users'] ?? [])]));
+        if (!isset($users[$username])) {
+            throw new RuntimeException('Administrator account not found.');
+        }
+        $users[$username]['role'] = normalize_admin_role((string) ($_POST['role'] ?? 'download'));
+        $settings = array_merge($settings, ['admin_users' => $users, 'updated_at' => date(DATE_ATOM)]);
+        write_app_settings($config, $settings);
+        flash('success', 'Role for ' . $username . ' was updated.');
+        redirect_to($config, 'admin/settings');
+    }
+
+    if (preg_match('#^/admin/settings/users/([a-z0-9._-]+)/delete$#i', $path, $m) && $method === 'POST') {
+        require_primary_admin($config); verify_csrf();
+        $username = normalize_admin_username($m[1]);
+        if ($username === 'admin') {
+            throw new RuntimeException('The primary admin account cannot be removed.');
+        }
+        $settings = load_app_settings($config);
+        $users = admin_users(array_replace($config, ['admin_users' => (array) ($settings['admin_users'] ?? [])]));
+        if (!isset($users[$username])) {
+            throw new RuntimeException('Administrator account not found.');
+        }
+        unset($users[$username]);
+        $settings = array_merge($settings, ['admin_users' => $users, 'updated_at' => date(DATE_ATOM)]);
+        write_app_settings($config, $settings);
+        flash('success', 'Administrator account ' . $username . ' was removed.');
+        redirect_to($config, 'admin/settings');
+    }
+
     if ($path === '/admin/settings/add-disk' && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'settings'); verify_csrf();
         $settings = load_app_settings($config);
         $newDisk = trim((string) ($_POST['new_disk_path'] ?? ''));
         if ($newDisk === '') {
@@ -352,7 +486,7 @@ try {
     }
 
     if ($path === '/admin/background' && $method === 'GET') {
-        require_admin($config); $background = current_background($config);
+        require_admin_permission($config, 'settings'); $background = current_background($config);
         render_header($config, 'Background', true, 'admin-page');
         echo '<main class="container narrow">'; render_flashes(); echo '<h1>Global background</h1>';
         echo '<section class="panel"><h2>GIF via URL</h2><p class="muted">Insert a direct public HTTPS URL to a GIF. It will be used by default for all galleries that do not have their own background.</p>';
@@ -367,14 +501,14 @@ try {
     }
 
     if ($path === '/admin/background/url' && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'settings'); verify_csrf();
         save_background_url($config, (string) ($_POST['background_url'] ?? ''));
         flash('success', 'The background link was saved.');
         redirect_to($config, 'admin/background');
     }
 
     if ($path === '/admin/background/upload' && $method === 'POST') {
-        require_admin($config); verify_csrf();
+        require_admin_permission($config, 'settings'); verify_csrf();
         if (empty($_FILES['background'])) throw new RuntimeException('No file was selected.');
         save_background_upload($config, $_FILES['background']); flash('success', 'The background was changed.'); redirect_to($config, 'admin/background');
     }
@@ -392,7 +526,7 @@ try {
         verify_csrf(); $gallery = load_gallery($config, $m[1]);
         if (!$gallery || empty($gallery['active'])) { http_response_code(404); exit('The gallery is not available.'); }
         $remaining = rate_limit_remaining_seconds($config, 'gallery_unlock', (string) $gallery['id']);
-        if ($remaining > 0) { flash('error', 'Too many attempts. Please try again later.'); redirect_to($config, $m[1]); }
+        if ($remaining > 0) { flash('error', 'Too many attempts. Please try again in ' . format_retry_after($remaining) . '.'); redirect_to($config, $m[1]); }
         if (password_verify((string) ($_POST['password'] ?? ''), (string) $gallery['password_hash'])) {
             $gallery = gallery_record_event($config, $gallery, 'unlock');
             set_gallery_unlocked($gallery);
@@ -422,7 +556,10 @@ try {
             foreach ($gallery['files'] ?? [] as $file) {
                 $frame++;
                 $fid = (string) $file['id'];
-                echo '<article class="public-photo"><a data-download-kind="photo" data-download-size="' . (int) ($file['size'] ?? 0) . '" href="' . e(base_url($config, $gallery['id'] . '/photo/' . $fid)) . '" title="Download ' . e((string) $file['original_name']) . '"><span class="frame-no">' . str_pad((string) $frame, 2, '0', STR_PAD_LEFT) . '</span><img loading="lazy" src="' . e(base_url($config, $gallery['id'] . '/preview/' . $fid)) . '" alt=""><span class="dl-label">Download</span></a></article>';
+                echo '<article class="public-photo"><a data-download-kind="photo" data-download-size="' . (int) ($file['size'] ?? 0) . '" href="' . e(base_url($config, $gallery['id'] . '/photo/' . $fid)) . '" title="Download ' . e((string) $file['original_name']) . '"><span class="frame-no">' . str_pad((string) $frame, 2, '0', STR_PAD_LEFT) . '</span>';
+                if (!empty($file['preview'])) echo '<img loading="lazy" src="' . e(base_url($config, $gallery['id'] . '/preview/' . $fid)) . '" alt="">';
+                else echo '<span class="raw-file">RAW<br>' . e(strtoupper(pathinfo((string) $file['original_name'], PATHINFO_EXTENSION))) . '</span>';
+                echo '<span class="dl-label">Download</span></a></article>';
             }
             if (empty($gallery['files'])) echo '<div class="empty glass">The gallery is empty.</div>';
             echo '</section>';
@@ -437,7 +574,11 @@ try {
         $file = null; foreach ($gallery['files'] ?? [] as $candidate) if (($candidate['id'] ?? '') === $m[3]) { $file = $candidate; break; }
         if (!$file) { http_response_code(404); exit; }
         $dir = gallery_dir($config, (string) $gallery['id']);
-        if ($m[2] === 'preview' && !empty($file['preview']) && is_file($dir . '/previews/' . basename((string) $file['preview']))) {
+        if ($m[2] === 'preview') {
+            if (empty($file['preview']) || !is_file($dir . '/previews/' . basename((string) $file['preview']))) {
+                http_response_code(404);
+                exit;
+            }
             $pathName = $dir . '/previews/' . basename((string) $file['preview']); $mime = 'image/jpeg'; $disposition = 'inline'; $name = 'preview.jpg';
         } else {
             $pathName = $dir . '/originals/' . basename((string) $file['stored_name']); $mime = (string) $file['mime']; $disposition = $m[2] === 'photo' ? 'attachment' : 'inline'; $name = (string) $file['original_name'];

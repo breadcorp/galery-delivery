@@ -226,6 +226,21 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   transition: opacity 160ms ease, transform 160ms ease;
 }
 .public-photo a:hover .dl-label, .public-photo a:focus-visible .dl-label { opacity: 1; transform: translateY(0); }
+.raw-file {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.7;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  background: linear-gradient(135deg, rgba(201, 162, 39, 0.16), rgba(21, 18, 13, 0.92));
+  border: 1px solid rgba(201, 162, 39, 0.26);
+}
+.admin-photo .raw-file { aspect-ratio: 4 / 3; }
 
 .frame-no {
   position: absolute;
