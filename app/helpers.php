@@ -19,9 +19,38 @@ function redirect_to(array $config, string $path): never
 
 function absolute_url(array $config, string $path = ''): string
 {
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $origin = trim((string) ($config['public_origin'] ?? ''));
+    if ($origin === '') {
+        $origin = 'https://' . (string) ($_SERVER['SERVER_NAME'] ?? 'localhost');
+    }
 
-    return 'https://' . $host . base_url($config, $path);
+    $parts = parse_url($origin);
+    $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+    $host = (string) ($parts['host'] ?? '');
+    $port = isset($parts['port']) ? (int) $parts['port'] : null;
+    $validHost = $host === 'localhost'
+        || filter_var($host, FILTER_VALIDATE_IP) !== false
+        || filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false;
+    $validPath = !isset($parts['path']) || $parts['path'] === '' || $parts['path'] === '/';
+
+    if (!is_array($parts)
+        || !in_array($scheme, ['http', 'https'], true)
+        || !$validHost
+        || !$validPath
+        || isset($parts['user'])
+        || isset($parts['pass'])
+        || isset($parts['query'])
+        || isset($parts['fragment'])
+        || ($port !== null && ($port < 1 || $port > 65535))) {
+        throw new RuntimeException('The public origin is invalid.');
+    }
+
+    $authority = str_contains($host, ':') ? '[' . $host . ']' : $host;
+    if ($port !== null) {
+        $authority .= ':' . $port;
+    }
+
+    return $scheme . '://' . $authority . base_url($config, $path);
 }
 
 function request_method(): string
@@ -304,11 +333,6 @@ function gallery_is_unlocked(array $config, array $gallery): bool
     $expectedVersion = gallery_auth_version($gallery);
     $ttl = max(300, (int) ($config['gallery_unlock_ttl'] ?? 86400));
 
-    // Backward compatibility with old int-only session payload.
-    if (is_int($entry)) {
-        $entry = ['unlocked_at' => $entry, 'auth_version' => $expectedVersion];
-    }
-
     if (!is_array($entry)) {
         unset($_SESSION[gallery_session_key($uuid)]);
         return false;
@@ -321,7 +345,7 @@ function gallery_is_unlocked(array $config, array $gallery): bool
         return false;
     }
 
-    if (($unlockedAt + $ttl) < time()) {
+    if ($unlockedAt > time() || ($unlockedAt + $ttl) <= time()) {
         unset($_SESSION[gallery_session_key($uuid)]);
         return false;
     }
@@ -334,6 +358,9 @@ function set_gallery_unlocked(array $gallery): void
     $uuid = (string) ($gallery['id'] ?? '');
     if ($uuid === '') {
         return;
+    }
+    if (session_status() !== PHP_SESSION_ACTIVE || !session_regenerate_id(true)) {
+        throw new RuntimeException('The gallery session could not be secured.');
     }
     $_SESSION[gallery_session_key($uuid)] = [
         'unlocked_at' => time(),
@@ -351,6 +378,11 @@ function safe_download_name(string $name): string
 {
     $name = str_replace(["\r", "\n", '"'], ['', '', "'"], $name);
     return $name !== '' ? $name : 'download';
+}
+
+function csv_safe_value(string $value): string
+{
+    return preg_match('/\A[=+\-@]/u', $value) === 1 ? "'" . $value : $value;
 }
 
 function format_last_access(?string $value): string
@@ -389,90 +421,4 @@ function format_retry_after(int $seconds): string
     return $minutes . ' minute' . ($minutes === 1 ? '' : 's');
 }
 
-function send_file_response(string $path, string $mime, string $disposition, string $downloadName, bool $allowRanges = true): void
-{
-    if (!is_file($path)) {
-        http_response_code(404);
-        exit;
-    }
-
-    $size = (int) (filesize($path) ?: 0);
-    $start = 0;
-    $end = $size > 0 ? $size - 1 : 0;
-    $status = 200;
-
-    if ($allowRanges) {
-        header('Accept-Ranges: bytes');
-        $rangeHeader = (string) ($_SERVER['HTTP_RANGE'] ?? '');
-        if ($rangeHeader !== '' && preg_match('/^bytes=(\d*)-(\d*)$/', trim($rangeHeader), $m)) {
-            if ($m[1] === '' && $m[2] === '') {
-                http_response_code(416);
-                header('Content-Range: bytes */' . $size);
-                exit;
-            }
-
-            if ($m[1] === '') {
-                $suffix = (int) $m[2];
-                if ($suffix <= 0) {
-                    http_response_code(416);
-                    header('Content-Range: bytes */' . $size);
-                    exit;
-                }
-                $start = max(0, $size - $suffix);
-            } else {
-                $start = (int) $m[1];
-            }
-
-            if ($m[2] !== '') {
-                $end = (int) $m[2];
-            }
-
-            if ($size === 0 || $start > $end || $start >= $size) {
-                http_response_code(416);
-                header('Content-Range: bytes */' . $size);
-                exit;
-            }
-
-            $end = min($end, $size - 1);
-            $status = 206;
-            header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
-        }
-    }
-
-    $length = max(0, ($end - $start) + 1);
-    http_response_code($status);
-    header('Content-Type: ' . $mime);
-    header('Content-Length: ' . $length);
-    header('Cache-Control: private, no-store');
-    header('X-Content-Type-Options: nosniff');
-    header('Content-Disposition: ' . $disposition . '; filename="' . safe_download_name($downloadName) . '"; filename*=UTF-8\'\'' . rawurlencode($downloadName));
-
-    $fp = fopen($path, 'rb');
-    if ($fp === false) {
-        http_response_code(500);
-        exit;
-    }
-
-    try {
-        if ($start > 0) {
-            fseek($fp, $start);
-        }
-        $remaining = $length;
-        $chunk = 8192 * 16;
-        while ($remaining > 0 && !feof($fp)) {
-            $read = (int) min($chunk, $remaining);
-            $buffer = fread($fp, $read);
-            if ($buffer === false || $buffer === '') {
-                break;
-            }
-            echo $buffer;
-            $remaining -= strlen($buffer);
-            if (connection_aborted()) {
-                break;
-            }
-        }
-    } finally {
-        fclose($fp);
-    }
-    exit;
-}
+require_once __DIR__ . '/downloads.php';

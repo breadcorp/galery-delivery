@@ -13,6 +13,11 @@ if (str_starts_with($path, '/assets/')) {
 }
 
 try {
+    // Serialize metadata edits across sessions; upload and ZIP use their own scoped lock.
+    if ($method === 'POST' && preg_match('#^/admin/gallery/([0-9a-f-]+)/(?!upload$|zip$)#i', $path, $mutation)) {
+        require_admin($config); verify_csrf();
+        $mutationLock = gallery_write_lock($config, $mutation[1]);
+    }
     if (!app_is_installed($config)) {
         if ($path !== '/' && $path !== '' && $path !== '/setup') {
             redirect_to($config, '');
@@ -178,10 +183,46 @@ try {
             echo '<div class="secret-box"><strong>Gallery password</strong><p class="muted">For older galleries, the original password cannot be recovered. Set a new password below; it will then remain visible in the admin area.</p></div>';
         }
         $storage = is_array($gallery['storage'] ?? null) ? $gallery['storage'] : [];
+        $selectedPhotos = selected_gallery_files($config, $gallery);
+        if (!empty($gallery['legacy_downloads'])) {
+            echo '<p class="muted">Historical downloads without a known type: ' . (int) $gallery['legacy_downloads'] . '. These are kept separately from photo and ZIP downloads.</p>';
+        }
         echo '<section class="stats-grid"><div><span>Photos</span><strong>' . count($gallery['files'] ?? []) . '</strong></div><div><span>Views</span><strong>' . (int) ($gallery['views'] ?? 0) . '</strong></div><div><span>Unlocks</span><strong>' . (int) ($gallery['unlocks'] ?? 0) . '</strong></div><div><span>Photo downloads</span><strong>' . (int) ($gallery['photo_downloads'] ?? 0) . '</strong></div><div><span>ZIP downloads</span><strong>' . (int) ($gallery['zip_downloads'] ?? 0) . '</strong></div><div><span>Last access</span><strong>' . e(format_last_access(isset($gallery['last_access_at']) ? (string) $gallery['last_access_at'] : null)) . '</strong></div><div><span>Storage</span><strong>' . format_bytes((int) ($gallery['_disk_bytes'] ?? 0)) . '</strong></div><div><span>Disk</span><strong>' . e((string) ($gallery['_storage_label'] ?? ($gallery['_storage_root'] ?? 'unknown'))) . '</strong></div><div><span>ZIP</span><strong>' . (!empty($gallery['zip']['ready']) ? format_bytes((int) $gallery['zip']['size']) : (!empty($gallery['zip']['dirty']) ? 'outdated' : 'none')) . '</strong></div><div><span>Status</span><strong>' . (!empty($gallery['active']) ? 'Active' : 'Disabled') . '</strong></div><div><span>Cached files</span><strong>' . (int) ($storage['file_count'] ?? count($gallery['files'] ?? [])) . '</strong></div><div><span>ZIP state</span><strong>' . (!empty($gallery['zip']['dirty']) ? 'dirty' : 'current') . '</strong></div></section>';
+        echo '<section class="panel"><h2>Client selection</h2><p class="muted">' . count($selectedPhotos) . ' photos selected by the client.</p>';
+        if ($selectedPhotos) {
+            echo '<div class="action-row"><a class="button" href="' . e(base_url($config, 'admin/gallery/' . $uuid . '/selection.csv')) . '">Download CSV list</a><a class="button primary" href="' . e(base_url($config, 'admin/gallery/' . $uuid . '/selection.zip')) . '">Download selected ZIP</a></div><ul class="selection-list">';
+            foreach ($selectedPhotos as $selectedPhoto) {
+                echo '<li><strong>' . e((string) $selectedPhoto['original_name']) . '</strong><span>' . format_bytes((int) $selectedPhoto['size']) . '</span></li>';
+            }
+            echo '</ul>';
+        } else {
+            echo '<div class="empty">The client has not selected any photos yet.</div>';
+        }
+        echo '</section>';
+        $activityLog = gallery_activity_log($config, $gallery, 100);
+        echo '<section class="panel"><h2>Access history</h2>';
+        if ($activityLog) {
+            echo '<ol class="activity-list">';
+            foreach ($activityLog as $activity) {
+                $activityLabel = match ((string) $activity['event']) {
+                    'unlock' => 'Gallery unlocked',
+                    'photo_download' => 'Photo downloaded',
+                    'zip_download' => 'Full gallery ZIP downloaded',
+                    'photo_selected' => 'Photo selected',
+                    'photo_unselected' => 'Photo removed from selection',
+                    default => 'Gallery activity',
+                };
+                $photoName = trim((string) ($activity['photo_name'] ?? ''));
+                echo '<li><time datetime="' . e((string) $activity['at']) . '">' . e((string) $activity['at']) . '</time><span>' . e($activityLabel) . ($photoName !== '' ? ': ' . e($photoName) : '') . '</span></li>';
+            }
+            echo '</ol>';
+        } else {
+            echo '<div class="empty">No unlock or download activity recorded yet.</div>';
+        }
+        echo '</section>';
         if (admin_can('edit')) {
             echo '<section class="panel"><h2>Upload photos</h2><p class="muted">JPG, PNG, WebP, or RAW (DNG, CR2/CR3, NEF, ARW, RAF, ORF, RW2, PEF), up to 200 MB per file. RAW files are provided for download without a browser preview.</p>';
-            echo '<form method="post" enctype="multipart/form-data" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/upload')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label class="dropzone">Select photos<input type="file" name="photos[]" accept="image/jpeg,image/png,image/webp,.dng,.cr2,.cr3,.nef,.arw,.raf,.orf,.rw2,.pef,.3fr,.iiq,.x3f" multiple required></label><button class="primary">Upload photos</button></form></section>';
+            echo '<form data-upload-queue data-max-bytes="' . (int) $config['max_photo_bytes'] . '" method="post" enctype="multipart/form-data" action="' . e(base_url($config, 'admin/gallery/' . $uuid . '/upload')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><label class="dropzone">Drop photos here or select files<input type="file" name="photos[]" accept="image/jpeg,image/png,image/webp,.dng,.cr2,.cr3,.nef,.arw,.raf,.orf,.rw2,.pef,.3fr,.iiq,.x3f" multiple required></label><button class="primary">Upload photos</button></form></section>';
         }
         $galleryBackground = is_array($gallery['background'] ?? null) ? $gallery['background'] : ['mode' => 'global'];
         $backgroundMode = (($galleryBackground['mode'] ?? 'global') === 'custom') ? 'custom' : 'global';
@@ -226,9 +267,17 @@ try {
 
     if (preg_match('#^/admin/gallery/([0-9a-f-]+)/upload$#i', $path, $m) && $method === 'POST') {
         require_admin_permission($config, 'edit'); verify_csrf();
+        $asyncUpload = ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'XMLHttpRequest';
+        if ($asyncUpload) session_write_close();
         $gallery = load_gallery($config, $m[1]); if (!$gallery) throw new RuntimeException('Gallery not found.');
         if (empty($_FILES['photos'])) throw new RuntimeException('No file was selected.');
         $gallery = add_uploaded_photos($config, $gallery, $_FILES['photos']);
+        if ($asyncUpload) {
+            header('Content-Type: application/json');
+            header('Cache-Control: no-store');
+            echo json_encode(['ok' => true, 'file_count' => count($gallery['files']), 'upload_id' => (string) ($_POST['upload_id'] ?? '')]);
+            exit;
+        }
         flash('success', 'Photos were uploaded. ZIP is now marked outdated and will be rebuilt on the next Download all request.');
         redirect_to($config, 'admin/gallery/' . $gallery['id']);
     }
@@ -290,6 +339,36 @@ try {
         $gallery = remove_photo($config, $gallery, $m[2]);
         flash('success', 'The photo was deleted. ZIP is now marked outdated and will be rebuilt on the next Download all request.');
         redirect_to($config, 'admin/gallery/' . $gallery['id']);
+    }
+
+    if (preg_match('#^/admin/gallery/([0-9a-f-]+)/selection\.csv$#i', $path, $m) && $method === 'GET') {
+        require_admin($config);
+        $gallery = load_gallery($config, $m[1]);
+        if (!$gallery) { http_response_code(404); exit('Gallery not found.'); }
+        $selectedPhotos = selected_gallery_files($config, $gallery);
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="selection-' . $gallery['id'] . '.csv"');
+        header('Cache-Control: private, no-store');
+        $output = fopen('php://output', 'wb');
+        if ($output === false) { http_response_code(500); exit; }
+        fputcsv($output, ['filename', 'size_bytes', 'mime_type']);
+        foreach ($selectedPhotos as $selectedPhoto) {
+            fputcsv($output, [
+                csv_safe_value((string) $selectedPhoto['original_name']),
+                (int) $selectedPhoto['size'],
+                csv_safe_value((string) $selectedPhoto['mime']),
+            ]);
+        }
+        fclose($output);
+        exit;
+    }
+
+    if (preg_match('#^/admin/gallery/([0-9a-f-]+)/selection\.zip$#i', $path, $m) && $method === 'GET') {
+        require_admin($config);
+        $gallery = load_gallery($config, $m[1]);
+        if (!$gallery) { http_response_code(404); exit('Gallery not found.'); }
+        $zipPath = build_gallery_selection_zip($config, $gallery);
+        send_file_response($zipPath, 'application/zip', 'attachment', 'selection-' . $gallery['id'] . '.zip', false, true);
     }
 
     if ($path === '/admin/settings' && $method === 'GET') {
@@ -537,6 +616,20 @@ try {
         flash('error', 'Incorrect password.'); redirect_to($config, $m[1]);
     }
 
+    if (preg_match('#^/([0-9a-f-]+)/favorite$#i', $path, $m) && $method === 'POST') {
+        verify_csrf();
+        $gallery = load_gallery($config, $m[1]);
+        if (!$gallery || empty($gallery['active'])) { http_response_code(404); exit('The gallery is not available.'); }
+        if (!gallery_is_unlocked($config, $gallery)) { http_response_code(403); exit('Access denied.'); }
+        $photoId = (string) ($_POST['photo_id'] ?? '');
+        $selected = (string) ($_POST['selected'] ?? '');
+        if (!in_array($selected, ['0', '1'], true)) {
+            throw new RuntimeException('Invalid selection state.');
+        }
+        set_gallery_selection($config, $gallery, $photoId, $selected === '1');
+        redirect_to($config, $gallery['id']);
+    }
+
     if (preg_match('#^/([0-9a-f-]+)$#i', $path, $m) && $method === 'GET') {
         $gallery = load_gallery($config, $m[1]);
         if (!$gallery || empty($gallery['active'])) { http_response_code(404); exit('The gallery is not available.'); }
@@ -552,6 +645,8 @@ try {
             echo '<section class="gallery-toolbar"><div><h1>' . e($galleryName !== '' ? $galleryName : 'Photos') . '</h1><span>' . count($gallery['files'] ?? []) . ' files</span></div>';
             if (!empty($gallery['files'])) echo '<a class="button primary" data-download-kind="zip" data-download-size="' . (int) ($gallery['zip']['size'] ?? 0) . '" data-download-stream="0" href="' . e(base_url($config, $gallery['id'] . '/full.zip')) . '">Download all' . (!empty($gallery['zip']['ready']) ? ' · ' . format_bytes((int) $gallery['zip']['size']) : '') . '</a>';
             echo '</section><section class="public-photo-grid">';
+            $selection = load_gallery_selection($config, $gallery);
+            $selectedIds = array_fill_keys($selection['photo_ids'], true);
             $frame = 0;
             foreach ($gallery['files'] ?? [] as $file) {
                 $frame++;
@@ -559,7 +654,7 @@ try {
                 echo '<article class="public-photo"><a data-download-kind="photo" data-download-size="' . (int) ($file['size'] ?? 0) . '" href="' . e(base_url($config, $gallery['id'] . '/photo/' . $fid)) . '" title="Download ' . e((string) $file['original_name']) . '"><span class="frame-no">' . str_pad((string) $frame, 2, '0', STR_PAD_LEFT) . '</span>';
                 if (!empty($file['preview'])) echo '<img loading="lazy" src="' . e(base_url($config, $gallery['id'] . '/preview/' . $fid)) . '" alt="">';
                 else echo '<span class="raw-file">RAW<br>' . e(strtoupper(pathinfo((string) $file['original_name'], PATHINFO_EXTENSION))) . '</span>';
-                echo '<span class="dl-label">Download</span></a></article>';
+                echo '<span class="dl-label">Download</span></a><form class="photo-selection-form" method="post" action="' . e(base_url($config, $gallery['id'] . '/favorite')) . '"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><input type="hidden" name="photo_id" value="' . e($fid) . '"><button class="photo-selection-button small' . (isset($selectedIds[$fid]) ? ' selected' : '') . '" type="submit" name="selected" value="' . (isset($selectedIds[$fid]) ? '0' : '1') . '" aria-pressed="' . (isset($selectedIds[$fid]) ? 'true' : 'false') . '">' . (isset($selectedIds[$fid]) ? 'Selected' : 'Select') . '</button></form></article>';
             }
             if (empty($gallery['files'])) echo '<div class="empty glass">The gallery is empty.</div>';
             echo '</section>';
@@ -567,7 +662,7 @@ try {
         echo '</main>'; render_footer($config); exit;
     }
 
-    if (preg_match('#^/([0-9a-f-]+)/(photo|preview)/([0-9a-f]+)$#i', $path, $m) && $method === 'GET') {
+    if (preg_match('#^/([0-9a-f-]+)/(photo|preview)/([0-9a-f]+)$#i', $path, $m) && in_array($method, ['GET', 'HEAD'], true)) {
         $gallery = load_gallery($config, $m[1]);
         $adminOverride = is_admin() && isset($_GET['admin']);
         if (!$gallery || (!$adminOverride && (empty($gallery['active']) || !gallery_is_unlocked($config, $gallery)))) { http_response_code(403); exit('Access denied.'); }
@@ -584,20 +679,25 @@ try {
             $pathName = $dir . '/originals/' . basename((string) $file['stored_name']); $mime = (string) $file['mime']; $disposition = $m[2] === 'photo' ? 'attachment' : 'inline'; $name = (string) $file['original_name'];
         }
         if (!is_file($pathName)) { http_response_code(404); exit; }
+        $onStart = null;
         if ($m[2] === 'photo' && !$adminOverride) {
-            gallery_record_event($config, $gallery, 'photo_download');
+            $onStart = fn() => gallery_record_event($config, $gallery, 'photo_download', [
+                'photo_id' => (string) $file['id'],
+                'photo_name' => (string) $file['original_name'],
+            ]);
         }
-        send_file_response($pathName, $mime, $disposition, $name, true);
+        send_file_response($pathName, $mime, $disposition, $name, true, false, $onStart);
     }
 
-    if (preg_match('#^/([0-9a-f-]+)/full\.zip$#i', $path, $m) && $method === 'GET') {
+    if (preg_match('#^/([0-9a-f-]+)/full\.zip$#i', $path, $m) && in_array($method, ['GET', 'HEAD'], true)) {
         $gallery = load_gallery($config, $m[1]);
         if (!$gallery || empty($gallery['active']) || !gallery_is_unlocked($config, $gallery)) { http_response_code(403); exit('Access denied.'); }
+        session_write_close();
         $gallery = ensure_gallery_zip_ready($config, $gallery);
         $file = gallery_dir($config, (string) $gallery['id']) . '/full.zip';
         if (empty($gallery['zip']['ready']) || !is_file($file)) { http_response_code(404); exit('The ZIP is not ready.'); }
-        gallery_record_event($config, $gallery, 'zip_download');
-        send_file_response($file, 'application/zip', 'attachment', 'photos-' . $gallery['id'] . '.zip', true);
+        send_file_response($file, 'application/zip', 'attachment', 'photos-' . $gallery['id'] . '.zip', true, false,
+            fn() => gallery_record_event($config, $gallery, 'zip_download'));
     }
 
     if ($path === '/' || $path === '') {
@@ -606,6 +706,13 @@ try {
 
     http_response_code(404); echo 'Page not found.';
 } catch (Throwable $e) {
+    if (isset($asyncUpload) && $asyncUpload) {
+        http_response_code(422);
+        header('Content-Type: application/json');
+        header('Cache-Control: no-store');
+        echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
+        exit;
+    }
     if (!app_is_installed($config)) {
         flash('error', $e->getMessage());
         redirect_to($config, '');

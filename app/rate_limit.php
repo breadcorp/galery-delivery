@@ -9,7 +9,7 @@ function request_ip(): string
 
 function rate_limit_dir(array $config): string
 {
-    $dir = primary_storage_root($config) . '/_app/ratelimits';
+    $dir = app_data_dir($config) . '/ratelimits';
     if (!is_dir($dir) && !@mkdir($dir, 0770, true) && !is_dir($dir)) {
         throw new RuntimeException('Could not create rate limit storage.');
     }
@@ -38,15 +38,14 @@ function rate_limit_gc(array $config): void
         if ($checked > 200) {
             break;
         }
-        $data = read_json_file($file);
-        if (!is_array($data)) {
-            @unlink($file);
-            continue;
-        }
-        $expires = (int) ($data['expires_at'] ?? 0);
-        if ($expires > 0 && $expires <= $now) {
-            @unlink($file);
-        }
+        $lock = @fopen($file . '.lock', 'c');
+        if (!$lock) continue;
+        try {
+            if (!flock($lock, LOCK_EX | LOCK_NB)) continue;
+            $data = read_json_file($file);
+            $expires = (int) ($data['expires_at'] ?? 0);
+            if ($expires > 0 && $expires <= $now) @unlink($file);
+        } finally { fclose($lock); }
     }
 }
 
@@ -63,7 +62,8 @@ function rate_limit_default_state(): array
 
 function rate_limit_with_lock(string $path, callable $callback): mixed
 {
-    $fp = fopen($path, 'c+');
+    // Stable lock inode; JSON can be replaced atomically or collected safely.
+    $fp = fopen($path . '.lock', 'c+');
     if ($fp === false) {
         throw new RuntimeException('Could not open rate limit file.');
     }
@@ -73,10 +73,10 @@ function rate_limit_with_lock(string $path, callable $callback): mixed
             throw new RuntimeException('Could not lock rate limit file.');
         }
 
-        $raw = stream_get_contents($fp);
+        $raw = is_file($path) ? file_get_contents($path) : '';
         $state = rate_limit_default_state();
         if (is_string($raw) && trim($raw) !== '') {
-            $decoded = json_decode($raw, true);
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
             if (is_array($decoded)) {
                 $state = array_merge($state, $decoded);
             }
@@ -84,11 +84,7 @@ function rate_limit_with_lock(string $path, callable $callback): mixed
 
         $result = $callback($state);
 
-        ftruncate($fp, 0);
-        rewind($fp);
-        $json = json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL;
-        fwrite($fp, $json);
-        fflush($fp);
+        write_json_file($path, $state);
 
         flock($fp, LOCK_UN);
         return $result;
@@ -134,7 +130,7 @@ function rate_limit_register_failure(array $config, string $type, string $scope 
             return $lockedUntil - $now;
         }
 
-        if ($lastFailedAt > 0 && ($now - $lastFailedAt) > 1800) {
+        if ($lastFailedAt > 0 && ($now - max($lastFailedAt, $lockedUntil)) > 86400) {
             $fails = 0;
             $level = max(0, $level - 1);
         }
@@ -149,7 +145,7 @@ function rate_limit_register_failure(array $config, string $type, string $scope 
             $lockedUntil = $now + $lockSeconds;
             $state['locked_until'] = $lockedUntil;
         } else {
-            $state['locked_until'] = 0;
+            $state['locked_until'] = $lockedUntil;
         }
 
         $state['fails'] = $fails;
@@ -164,7 +160,8 @@ function rate_limit_register_failure(array $config, string $type, string $scope 
 function rate_limit_reset(array $config, string $type, string $scope = ''): void
 {
     $path = rate_limit_file($config, $type, $scope);
-    if (is_file($path)) {
-        @unlink($path);
-    }
+    rate_limit_with_lock($path, static function (array &$state): void {
+        $state = rate_limit_default_state();
+        $state['expires_at'] = time() + 86400;
+    });
 }

@@ -2,11 +2,20 @@
 declare(strict_types=1);
 
 return [
+    // Stable private control directory; independent of the selected photo disk.
+    'app_data_dir' => getenv('DOWNLOADS_APP_DATA_DIR') ?: '',
+    // php (portable), x-accel (Nginx), or x-sendfile (Apache).
+    'download_backend' => getenv('DOWNLOADS_DOWNLOAD_BACKEND') ?: 'php',
+    // Physical directory => internal Nginx URI, configured per storage disk.
+    'x_accel_mappings' => [],
     // Physical SSD storage. Keep this outside the public web directory.
     'storage_root' => getenv('DOWNLOADS_STORAGE_ROOT') ?: '/mnt/ssd/photos/downloads',
 
     // URL prefix where this app is mounted.
     'base_path' => rtrim(getenv('DOWNLOADS_BASE_PATH') ?: '/downloads', '/'),
+
+    // Optional canonical public origin, e.g. https://photos.example.com.
+    'public_origin' => getenv('DOWNLOADS_PUBLIC_ORIGIN') ?: '',
 
     'app_name' => 'Downloads',
 

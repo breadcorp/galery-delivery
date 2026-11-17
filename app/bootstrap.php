@@ -16,6 +16,9 @@ require_once __DIR__ . '/rate_limit.php';
 require_once __DIR__ . '/views.php';
 require_once __DIR__ . '/setup.php';
 
+// Pin control data before selecting a different active photo disk.
+$config['app_data_dir'] = app_data_dir($config);
+
 // One-time setup data lives on the SSD, so the uploaded application can stay read-only.
 $settings = load_app_settings($config);
 
@@ -43,6 +46,8 @@ if ($settings) {
 date_default_timezone_set((string) $config['timezone']);
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
+    ini_set('session.use_strict_mode', '1');
+    ini_set('session.use_only_cookies', '1');
     session_name((string) $config['session_name']);
     session_set_cookie_params([
         'httponly' => true,
@@ -52,3 +57,7 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
     ]);
     session_start();
 }
+
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: no-referrer');

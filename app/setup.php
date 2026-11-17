@@ -3,7 +3,36 @@ declare(strict_types=1);
 
 function app_settings_path(array $config): string
 {
-    return rtrim((string) $config['storage_root'], '/') . '/_app/settings.json';
+    return app_data_dir($config) . '/settings.json';
+}
+
+function app_data_dir(array $config): string
+{
+    $path = rtrim((string) ($config['app_data_dir'] ?? ''), '/\\');
+    if ($path === '') $path = rtrim((string) $config['storage_root'], '/\\') . '/_app';
+    $path = str_replace('\\', '/', $path);
+    if (!str_starts_with($path, '/') && !preg_match('#^[a-zA-Z]:/#', $path)) throw new RuntimeException('Use an absolute application data directory.');
+    // Resolve existing ancestors too: the destination may not exist at setup time.
+    $ancestor = $path;
+    $tail = '';
+    while (!file_exists($ancestor) && dirname($ancestor) !== $ancestor) {
+        $tail = '/' . basename($ancestor) . $tail;
+        $ancestor = dirname($ancestor);
+    }
+    $real = realpath($ancestor);
+    if ($real === false) throw new RuntimeException('Application data directory cannot be resolved.');
+    $resolved = str_replace('\\', '/', $real . $tail);
+    if (preg_match('#(?:^|/)\.\.(?:/|$)#', $resolved)) throw new RuntimeException('Use an absolute application data directory without parent segments.');
+    foreach ([dirname(__DIR__), (string) ($_SERVER['DOCUMENT_ROOT'] ?? '')] as $webroot) {
+        if ($webroot === '' || !is_dir($webroot)) continue;
+        $root = rtrim(str_replace('\\', '/', (string) realpath($webroot)), '/');
+        $candidate = $resolved;
+        if (PHP_OS_FAMILY === 'Windows') { $root = strtolower($root); $candidate = strtolower($candidate); }
+        if ($candidate === $root || str_starts_with($candidate, $root . '/')) {
+            throw new RuntimeException('Application settings must be outside the web root. Set DOWNLOADS_APP_DATA_DIR.');
+        }
+    }
+    return $resolved;
 }
 
 function legacy_app_settings_path(array $config): string
@@ -14,16 +43,27 @@ function legacy_app_settings_path(array $config): string
 function load_app_settings(array $config): array
 {
     $settingsPath = app_settings_path($config);
+    $legacyPath = legacy_app_settings_path($config);
     if (!is_file($settingsPath)) {
-        $legacyPath = legacy_app_settings_path($config);
         if (!is_file($legacyPath)) {
             return [];
         }
-        $settingsPath = $legacyPath;
+        $dir = dirname($settingsPath);
+        if (!is_dir($dir) && !@mkdir($dir, 0770, true) && !is_dir($dir)) throw new RuntimeException('Cannot create private settings directory.');
+        $lock = fopen($dir . '/migration.lock', 'c');
+        if (!$lock || !flock($lock, LOCK_EX)) throw new RuntimeException('Cannot lock settings migration.');
+        try {
+            if (!is_file($settingsPath)) {
+                $legacy = json_decode((string) file_get_contents($legacyPath), true, 512, JSON_THROW_ON_ERROR);
+                if (!is_array($legacy) || !$legacy) throw new RuntimeException('Invalid legacy settings.');
+                write_app_settings($config, $legacy);
+            }
+        } finally { flock($lock, LOCK_UN); fclose($lock); }
     }
-
-    $decoded = json_decode((string) @file_get_contents($settingsPath), true);
-    return is_array($decoded) ? $decoded : [];
+    $decoded = json_decode((string) file_get_contents($settingsPath), true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($decoded) || !$decoded) throw new RuntimeException('Invalid application settings; refusing to reopen setup.');
+    if (is_file($legacyPath) && !@unlink($legacyPath)) throw new RuntimeException('Remove the migrated app/settings.json from the web root.');
+    return $decoded;
 }
 
 function write_app_settings(array $config, array $settings): void
@@ -45,19 +85,9 @@ function write_app_settings(array $config, array $settings): void
         throw new RuntimeException('The application settings could not be saved.');
     }
 
-    // An old app-local settings file may exist after an upgrade. Updating it is
-    // optional because deployed application files are commonly read-only.
+    // Never recreate secrets inside the deployed application directory.
     $legacyPath = legacy_app_settings_path($config);
-    $legacyDir = dirname($legacyPath);
-    if (is_dir($legacyDir) && is_writable($legacyDir)) {
-        $legacyTmp = $legacyPath . '.tmp-' . bin2hex(random_bytes(6));
-        if (@file_put_contents($legacyTmp, $json . PHP_EOL, LOCK_EX) !== false) {
-            @chmod($legacyTmp, 0660);
-            if (!@rename($legacyTmp, $legacyPath)) {
-                @unlink($legacyTmp);
-            }
-        }
-    }
+    if (is_file($legacyPath) && !@unlink($legacyPath)) throw new RuntimeException('Remove the migrated app/settings.json from the web root.');
 }
 
 function resolve_storage_root(array $config, array $settings): string
@@ -196,7 +226,8 @@ function complete_initial_setup(array $config, string $password): void
 {
     ensure_storage_layout($config);
 
-    $appDir = rtrim((string) $config['storage_root'], '/') . '/_app';
+    $appDir = app_data_dir($config);
+    if (!is_dir($appDir) && !@mkdir($appDir, 0770, true) && !is_dir($appDir)) throw new RuntimeException('Cannot create private settings directory.');
     $settingsPath = $appDir . '/settings.json';
     $lockPath = $appDir . '/setup.lock';
     $lock = @fopen($lockPath, 'c');

@@ -1,0 +1,13 @@
+# Apache 2.4: place inside the existing VirtualHost. Enable mod_rewrite.
+Alias /downloads /var/www/site/downloads
+<Directory /var/www/site/downloads>
+    Options -Indexes -MultiViews
+    AllowOverride FileInfo Options AuthConfig Indexes
+    Require all granted
+    # Keep your existing PHP-FPM handler. Only index.php is public.
+</Directory>
+# Optional mod_xsendfile, after installing/enabling it:
+# XSendFile On
+# XSendFilePath /mnt/ssd/photos/downloads
+# Set DOWNLOADS_DOWNLOAD_BACKEND=x-sendfile only after this module is enabled.
+# Add XSendFilePath for each storage disk. Never Alias the private storage.

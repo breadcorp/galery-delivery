@@ -115,6 +115,26 @@ function gallery_stats_path(array $config, string $uuid): string
     return gallery_dir($config, $uuid) . '/.stats.json';
 }
 
+function gallery_activity_path(array $config, string $uuid): string
+{
+    return gallery_dir($config, $uuid) . '/.activity.json';
+}
+
+function gallery_activity_lock_path(array $config, string $uuid): string
+{
+    return gallery_dir($config, $uuid) . '/.activity.lock';
+}
+
+function gallery_selection_path(array $config, string $uuid): string
+{
+    return gallery_dir($config, $uuid) . '/.selection.json';
+}
+
+function gallery_selection_lock_path(array $config, string $uuid): string
+{
+    return gallery_dir($config, $uuid) . '/.selection.lock';
+}
+
 function gallery_stats_lock_path(array $config, string $uuid): string
 {
     return gallery_dir($config, $uuid) . '/.stats.lock';
@@ -171,14 +191,13 @@ function default_gallery_live_stats(array $gallery): array
     $legacyDownloads = max(0, (int) ($gallery['download_count'] ?? 0));
     $photoDownloads = max(0, (int) ($gallery['photo_downloads'] ?? 0));
     $zipDownloads = max(0, (int) ($gallery['zip_downloads'] ?? 0));
-    if ($legacyDownloads > 0 && $photoDownloads === 0 && $zipDownloads === 0) {
-        $photoDownloads = $legacyDownloads;
-    }
+    $legacyUnclassified = max(0, (int) ($gallery['legacy_downloads'] ?? ($legacyDownloads - $photoDownloads - $zipDownloads)));
     return [
         'views' => max(0, (int) ($gallery['views'] ?? 0)),
         'unlocks' => max(0, (int) ($gallery['unlocks'] ?? 0)),
         'photo_downloads' => $photoDownloads,
         'zip_downloads' => $zipDownloads,
+        'legacy_downloads' => $legacyUnclassified,
         'last_access_at' => !empty($gallery['last_access_at']) ? (string) $gallery['last_access_at'] : null,
     ];
 }
@@ -189,6 +208,7 @@ function normalize_live_stats(array $stats): array
     $stats['unlocks'] = max(0, (int) ($stats['unlocks'] ?? 0));
     $stats['photo_downloads'] = max(0, (int) ($stats['photo_downloads'] ?? 0));
     $stats['zip_downloads'] = max(0, (int) ($stats['zip_downloads'] ?? 0));
+    $stats['legacy_downloads'] = max(0, (int) ($stats['legacy_downloads'] ?? 0));
     $stats['last_access_at'] = !empty($stats['last_access_at']) ? (string) $stats['last_access_at'] : null;
     return $stats;
 }
@@ -200,7 +220,8 @@ function merge_gallery_live_stats(array $gallery, array $stats): array
     $gallery['unlocks'] = $stats['unlocks'];
     $gallery['photo_downloads'] = $stats['photo_downloads'];
     $gallery['zip_downloads'] = $stats['zip_downloads'];
-    $gallery['download_count'] = $stats['photo_downloads'] + $stats['zip_downloads'];
+    $gallery['legacy_downloads'] = $stats['legacy_downloads'];
+    $gallery['download_count'] = $stats['photo_downloads'] + $stats['zip_downloads'] + $stats['legacy_downloads'];
     $gallery['last_access_at'] = $stats['last_access_at'];
     return $gallery;
 }
@@ -241,6 +262,143 @@ function write_json_file(string $path, array $data): void
         @unlink($tmp);
         throw new RuntimeException('Replacing JSON failed.');
     }
+}
+
+function record_gallery_activity(array $config, string $uuid, string $event, array $details = []): void
+{
+    $allowedEvents = ['unlock', 'photo_download', 'zip_download', 'photo_selected', 'photo_unselected'];
+    if (!in_array($event, $allowedEvents, true)) {
+        throw new InvalidArgumentException('Invalid gallery activity event.');
+    }
+
+    $lockPath = gallery_activity_lock_path($config, $uuid);
+    $lock = fopen($lockPath, 'c');
+    if ($lock === false || !flock($lock, LOCK_EX)) {
+        if (is_resource($lock)) {
+            fclose($lock);
+        }
+        throw new RuntimeException('Gallery activity is temporarily locked.');
+    }
+    @chmod($lockPath, 0660);
+
+    try {
+        $data = read_json_file(gallery_activity_path($config, $uuid)) ?? [];
+        $events = is_array($data['events'] ?? null) ? array_values($data['events']) : [];
+        $entry = ['at' => date(DATE_ATOM), 'event' => $event];
+
+        $photoId = (string) ($details['photo_id'] ?? '');
+        if ($photoId !== '' && preg_match('/\A[a-f0-9]{1,48}\z/i', $photoId)) {
+            $entry['photo_id'] = $photoId;
+        }
+        $photoName = trim((string) ($details['photo_name'] ?? ''));
+        if ($photoName !== '') {
+            $entry['photo_name'] = app_substr($photoName, 0, 180);
+        }
+
+        $events[] = $entry;
+        if (count($events) > 500) {
+            $events = array_slice($events, -500);
+        }
+        write_json_file(gallery_activity_path($config, $uuid), ['events' => $events]);
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
+}
+
+function gallery_activity_log(array $config, array $gallery, int $limit = 100): array
+{
+    $data = read_json_file(gallery_activity_path($config, (string) $gallery['id'])) ?? [];
+    $events = is_array($data['events'] ?? null) ? $data['events'] : [];
+    $events = array_values(array_filter($events, static fn($event): bool =>
+        is_array($event) && isset($event['at'], $event['event'])
+    ));
+
+    return array_slice(array_reverse($events), 0, max(0, $limit));
+}
+
+function load_gallery_selection(array $config, array $gallery): array
+{
+    $data = read_json_file(gallery_selection_path($config, (string) $gallery['id'])) ?? [];
+    $storedIds = is_array($data['photo_ids'] ?? null) ? $data['photo_ids'] : [];
+    $validIds = [];
+    foreach ($gallery['files'] ?? [] as $file) {
+        $id = (string) ($file['id'] ?? '');
+        if ($id !== '') {
+            $validIds[$id] = true;
+        }
+    }
+
+    $photoIds = [];
+    foreach ($storedIds as $id) {
+        if (is_string($id) && isset($validIds[$id]) && !in_array($id, $photoIds, true)) {
+            $photoIds[] = $id;
+        }
+    }
+
+    return [
+        'photo_ids' => $photoIds,
+        'updated_at' => !empty($data['updated_at']) ? (string) $data['updated_at'] : null,
+    ];
+}
+
+function selected_gallery_files(array $config, array $gallery): array
+{
+    $selected = array_fill_keys(load_gallery_selection($config, $gallery)['photo_ids'], true);
+    return array_values(array_filter($gallery['files'] ?? [], static fn(array $file): bool =>
+        isset($selected[(string) ($file['id'] ?? '')])
+    ));
+}
+
+function set_gallery_selection(array $config, array $gallery, string $photoId, bool $selected): array
+{
+    $photoName = '';
+    $photoExists = false;
+    foreach ($gallery['files'] ?? [] as $file) {
+        if (($file['id'] ?? '') === $photoId) {
+            $photoExists = true;
+            $photoName = (string) ($file['original_name'] ?? '');
+            break;
+        }
+    }
+    if ($selected && !$photoExists) {
+        throw new RuntimeException('The photo was not found.');
+    }
+
+    $uuid = (string) $gallery['id'];
+    $lockPath = gallery_selection_lock_path($config, $uuid);
+    $lock = fopen($lockPath, 'c');
+    if ($lock === false || !flock($lock, LOCK_EX)) {
+        if (is_resource($lock)) {
+            fclose($lock);
+        }
+        throw new RuntimeException('The gallery selection is temporarily locked.');
+    }
+    @chmod($lockPath, 0660);
+
+    try {
+        $data = read_json_file(gallery_selection_path($config, $uuid)) ?? [];
+        $photoIds = is_array($data['photo_ids'] ?? null) ? $data['photo_ids'] : [];
+        $photoIds = array_values(array_unique(array_filter($photoIds, 'is_string')));
+        $photoIds = array_values(array_filter($photoIds, static fn(string $id): bool => $id !== $photoId));
+        if ($selected) {
+            $photoIds[] = $photoId;
+        }
+        write_json_file(gallery_selection_path($config, $uuid), [
+            'photo_ids' => $photoIds,
+            'updated_at' => date(DATE_ATOM),
+        ]);
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
+
+    record_gallery_activity($config, $uuid, $selected ? 'photo_selected' : 'photo_unselected', [
+        'photo_id' => $photoId,
+        'photo_name' => $photoName,
+    ]);
+
+    return load_gallery_selection($config, $gallery);
 }
 
 function refresh_gallery_storage_stats(array $config, array $gallery, bool $persist = true): array
@@ -290,7 +448,16 @@ function ensure_gallery_storage_stats(array $config, array $gallery, bool $persi
     if ($hasAll && $storage['updated_at'] !== null) {
         return $gallery;
     }
-    return refresh_gallery_storage_stats($config, $gallery, $persistIfMissing);
+    if (!$persistIfMissing) return refresh_gallery_storage_stats($config, $gallery, false);
+    return with_gallery_write_lock($config, (string) $gallery['id'], function () use ($config, $gallery): array {
+        // Re-read under the write lock: an upload may have committed since this read began.
+        $current = read_json_file(gallery_json_path($config, (string) $gallery['id']));
+        if (!$current) throw new RuntimeException('Gallery not found.');
+        $current = normalize_gallery_base($current);
+        $current = merge_gallery_live_stats($current, load_gallery_live_stats($config, $current));
+        if ($current['storage']['updated_at'] !== null) return $current;
+        return refresh_gallery_storage_stats($config, $current, true);
+    });
 }
 
 function load_gallery_live_stats(array $config, array $gallery): array
@@ -309,7 +476,7 @@ function save_gallery_live_stats(array $config, string $uuid, array $stats): voi
     write_json_file(gallery_stats_path($config, $uuid), normalize_live_stats($stats));
 }
 
-function gallery_record_event(array $config, array $gallery, string $event): array
+function gallery_record_event(array $config, array $gallery, string $event, array $details = []): array
 {
     $uuid = (string) $gallery['id'];
     $lockPath = gallery_stats_lock_path($config, $uuid);
@@ -338,6 +505,10 @@ function gallery_record_event(array $config, array $gallery, string $event): arr
     } finally {
         flock($lock, LOCK_UN);
         fclose($lock);
+    }
+
+    if (in_array($event, ['unlock', 'photo_download', 'zip_download'], true)) {
+        record_gallery_activity($config, $uuid, $event, $details);
     }
 
     return merge_gallery_live_stats($gallery, $stats);
@@ -544,7 +715,24 @@ function mark_gallery_zip_dirty(array $config, array $gallery): array
 
 function add_uploaded_photos(array $config, array $gallery, array $files): array
 {
+    return with_gallery_write_lock($config, (string) $gallery['id'], function () use ($config, $gallery, $files): array {
+        $fresh = load_gallery($config, (string) $gallery['id']);
+        if (!$fresh) throw new RuntimeException('Gallery not found.');
+        return add_uploaded_photos_locked($config, $fresh, $files);
+    });
+}
+
+function add_uploaded_photos_locked(array $config, array $gallery, array $files): array
+{
     $normalized = normalize_files_array($files);
+    if (!$normalized) throw new RuntimeException('No file was selected.');
+    $uploadId = (string) ($_POST['upload_id'] ?? '');
+    if ($uploadId !== '' && (count($normalized) !== 1 || !preg_match('/^[a-f0-9]{32}$/D', $uploadId))) throw new RuntimeException('Invalid upload identifier.');
+    if ($uploadId !== '') {
+        foreach ($gallery['files'] as $existing) {
+            if (($existing['upload_id'] ?? '') === $uploadId) return $gallery;
+        }
+    }
     $dir = gallery_dir($config, (string) $gallery['id']);
     $gallery = normalize_gallery_storage_stats($gallery);
 
@@ -564,6 +752,7 @@ function add_uploaded_photos(array $config, array $gallery, array $files): array
         $previewSize = ($previewReady && is_file($previewPath)) ? (int) (filesize($previewPath) ?: 0) : 0;
 
         $gallery['files'][] = [
+            'upload_id' => $uploadId,
             'id' => $fileId,
             'original_name' => normalize_filename((string) ($file['name'] ?? 'photo.' . $meta['extension'])),
             'stored_name' => $stored,
@@ -576,6 +765,10 @@ function add_uploaded_photos(array $config, array $gallery, array $files): array
         $gallery['storage']['file_count'] = max(0, (int) $gallery['storage']['file_count']) + 1;
         $gallery['storage']['original_bytes'] = max(0, (int) $gallery['storage']['original_bytes']) + $meta['size'];
         $gallery['storage']['preview_bytes'] = max(0, (int) $gallery['storage']['preview_bytes']) + $previewSize;
+        // Commit each file, so a later invalid file cannot orphan earlier uploads.
+        $gallery = mark_gallery_zip_dirty($config, $gallery);
+        $gallery['storage']['updated_at'] = date(DATE_ATOM);
+        save_gallery($config, $gallery);
     }
 
     $gallery = mark_gallery_zip_dirty($config, $gallery);
@@ -634,8 +827,7 @@ function create_preview(string $source, string $target, string $mime): bool
     $dst = imagecreatetruecolor($w, $h);
     imagecopyresampled($dst, $src, 0, 0, 0, 0, $w, $h, $info[0], $info[1]);
     $ok = imagejpeg($dst, $target, 84);
-    imagedestroy($src);
-    imagedestroy($dst);
+    unset($src, $dst);
     if ($ok) {
         chmod($target, 0660);
     }
@@ -698,6 +890,11 @@ function gallery_zip_is_current(array $config, array $gallery): bool
 
 function build_gallery_zip(array $config, array $gallery, bool $force = true): array
 {
+    return with_gallery_write_lock($config, (string) $gallery['id'], fn() => build_gallery_zip_locked($config, $gallery, $force));
+}
+
+function build_gallery_zip_locked(array $config, array $gallery, bool $force): array
+{
     if (!class_exists('ZipArchive')) {
         throw new RuntimeException('The server is missing the PHP ZIP extension (ZipArchive).');
     }
@@ -746,7 +943,10 @@ function build_gallery_zip(array $config, array $gallery, bool $force = true): a
             }
         }
 
-        $zip->close();
+        if (!$zip->close()) {
+            @unlink($tmp);
+            throw new RuntimeException('The ZIP could not be completed.');
+        }
         if (!rename($tmp, $target)) {
             @unlink($tmp);
             throw new RuntimeException('The completed ZIP could not be moved.');
@@ -775,7 +975,92 @@ function ensure_gallery_zip_ready(array $config, array $gallery): array
     if (gallery_zip_is_current($config, $gallery)) {
         return $gallery;
     }
-    return build_gallery_zip($config, $gallery, true);
+    return build_gallery_zip($config, $gallery, false);
+}
+
+// The same lock protects uploads, metadata edits, deletes and ZIP snapshots.
+function gallery_write_lock(array $config, string $uuid)
+{
+    if (!gallery_uuid_is_valid($uuid)) throw new RuntimeException('Invalid gallery ID.');
+    $dir = app_data_dir($config) . '/gallery-locks';
+    $key = $dir . '/' . $uuid . '.lock';
+    $held =& gallery_write_locks();
+    if (isset($held[$key])) {
+        $held[$key]['depth']++;
+        return $held[$key]['handle'];
+    }
+    if (!is_dir($dir) && !@mkdir($dir, 0770, true) && !is_dir($dir)) throw new RuntimeException('Cannot create gallery lock directory.');
+    $lock = fopen($key, 'c');
+    if (!$lock || !flock($lock, LOCK_EX)) throw new RuntimeException('Cannot lock gallery.');
+    $held[$key] = ['handle' => $lock, 'depth' => 1];
+    return $lock;
+}
+
+function &gallery_write_locks(): array
+{
+    static $held = [];
+    return $held;
+}
+
+function gallery_write_unlock(array $config, string $uuid): void
+{
+    $key = app_data_dir($config) . '/gallery-locks/' . $uuid . '.lock';
+    $held =& gallery_write_locks();
+    if (!isset($held[$key]) || --$held[$key]['depth'] > 0) return;
+    flock($held[$key]['handle'], LOCK_UN);
+    fclose($held[$key]['handle']);
+    unset($held[$key]);
+}
+
+function with_gallery_write_lock(array $config, string $uuid, callable $callback): mixed
+{
+    $lock = gallery_write_lock($config, $uuid);
+    try { return $callback(); }
+    finally { gallery_write_unlock($config, $uuid); }
+}
+
+function build_gallery_selection_zip(array $config, array $gallery): string
+{
+    if (!class_exists('ZipArchive')) {
+        throw new RuntimeException('The server is missing the PHP ZIP extension (ZipArchive).');
+    }
+
+    $selectedFiles = selected_gallery_files($config, $gallery);
+    if (!$selectedFiles) {
+        throw new RuntimeException('No photos have been selected.');
+    }
+
+    $dir = gallery_dir($config, (string) $gallery['id']);
+    $tmp = $dir . '/selection-' . bin2hex(random_bytes(8)) . '.zip';
+    $zip = new ZipArchive();
+    if ($zip->open($tmp, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+        @unlink($tmp);
+        throw new RuntimeException('The selection ZIP could not be created.');
+    }
+
+    $usedNames = [];
+    $added = 0;
+    foreach ($selectedFiles as $file) {
+        $source = $dir . '/originals/' . basename((string) ($file['stored_name'] ?? ''));
+        if (!is_file($source)) {
+            continue;
+        }
+        $name = unique_zip_name((string) ($file['original_name'] ?? 'photo'), $usedNames);
+        if (!$zip->addFile($source, $name)) {
+            $zip->close();
+            @unlink($tmp);
+            throw new RuntimeException('A selected photo could not be added to the ZIP archive.');
+        }
+        $added++;
+    }
+
+    if (!$zip->close() || $added === 0) {
+        @unlink($tmp);
+        throw new RuntimeException('No selected photos were available for the ZIP archive.');
+    }
+
+    chmod($tmp, 0660);
+    return $tmp;
 }
 
 function unique_zip_name(string $name, array &$used): string

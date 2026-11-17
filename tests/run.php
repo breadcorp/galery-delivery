@@ -86,7 +86,7 @@ function assert_bootstrap_loads(string $downloadsRoot): void
     t_assert(isset($config) && is_array($config), 'Bootstrap should load and provide config array');
 }
 
-$testRoot = sys_get_temp_dir() . '/gallery-delivery-v020-tests-' . bin2hex(random_bytes(4));
+$testRoot = str_replace('\\', '/', sys_get_temp_dir()) . '/gallery-delivery-v020-tests-' . bin2hex(random_bytes(4));
 $diskA = $testRoot . '/disk-a';
 $diskB = $testRoot . '/disk-b';
 $downloadsRoot = dirname(__DIR__);
@@ -98,6 +98,7 @@ $config = [
     'storage_root' => $diskA,
     'storage_disks' => [$diskA, $diskB],
     'base_path' => '/downloads',
+    'public_origin' => 'https://gallery.example',
     'max_photo_bytes' => 200 * 1024 * 1024,
     'max_background_bytes' => 250 * 1024 * 1024,
     'app_secret' => base64_encode(random_bytes(32)),
@@ -111,6 +112,8 @@ try {
     // Repository integrity checks.
     assert_require_targets_exist($downloadsRoot);
     assert_bootstrap_loads($downloadsRoot);
+    t_assert(ini_get('session.use_strict_mode') === '1', 'Session strict mode must be enabled');
+    t_assert(ini_get('session.use_only_cookies') === '1', 'Session IDs must only be accepted from cookies');
 
     $requiredFunctions = [
         'route_path', 'request_method', 'app_is_installed', 'setup_checks', 'setup_has_blockers',
@@ -121,8 +124,10 @@ try {
         'is_primary_admin', 'require_primary_admin', 'normalize_admin_username', 'is_valid_admin_username', 'admin_users', 'admin_roles', 'admin_can',
         'create_gallery', 'load_gallery', 'gallery_admin_password', 'absolute_url', 'current_background',
         'rename_gallery', 'save_gallery_background', 'save_background_upload', 'save_background_url',
-        'gallery_record_event', 'set_gallery_unlocked', 'gallery_is_unlocked', 'send_file_response',
-        'ensure_gallery_zip_ready', 'build_gallery_zip', 'remove_photo', 'delete_gallery', 'aperture_icon',
+        'gallery_record_event', 'record_gallery_activity', 'gallery_activity_log', 'load_gallery_selection',
+        'selected_gallery_files', 'set_gallery_selection', 'set_gallery_unlocked', 'gallery_is_unlocked', 'send_file_response',
+        'ensure_gallery_zip_ready', 'build_gallery_zip', 'build_gallery_selection_zip', 'remove_photo', 'delete_gallery', 'aperture_icon',
+        'csv_safe_value',
     ];
     foreach ($requiredFunctions as $fn) {
         t_assert(function_exists($fn), 'Expected function is missing: ' . $fn);
@@ -144,6 +149,13 @@ try {
     t_assert(normalize_admin_username(' Editor.One ') === 'editor.one', 'Admin usernames must normalize consistently');
     t_assert(is_valid_admin_username('editor.one'), 'Valid administrator username should be accepted');
     t_assert(!is_valid_admin_username('ab'), 'Short administrator username should be rejected');
+    t_assert(csv_safe_value('=1+1') === "'=1+1", 'CSV formula cells must be neutralized');
+    t_assert(csv_safe_value('photo.jpg') === 'photo.jpg', 'Normal CSV values should remain unchanged');
+    $_SERVER['HTTP_HOST'] = 'attacker.example';
+    $_SERVER['SERVER_NAME'] = 'downloads.example';
+    t_assert(absolute_url($config, 'sample') === 'https://gallery.example/downloads/sample', 'Public links must use the configured canonical origin, not the request Host header');
+    $fallbackOriginConfig = array_replace($config, ['public_origin' => '']);
+    t_assert(absolute_url($fallbackOriginConfig, 'sample') === 'https://downloads.example/downloads/sample', 'Fallback public links must use SERVER_NAME rather than the request Host header');
 
     // Multi-disk: create on A then on B, both must remain accessible.
     $galleryA = [
@@ -236,7 +248,20 @@ try {
     t_assert(password_verify('PasswordA123', (string) $galleryA['password_hash']), 'Correct password verifies');
     t_assert(!password_verify('wrong', (string) $galleryA['password_hash']), 'Wrong password rejected');
 
+    gallery_record_event($config, $galleryA, 'unlock');
+    gallery_record_event($config, $galleryA, 'photo_download', [
+        'photo_id' => 'a1',
+        'photo_name' => 'sample.jpg',
+    ]);
+    $activity = gallery_activity_log($config, $galleryA);
+    t_assert(count($activity) === 2, 'Unlocks and downloads should be present in the activity log');
+    t_assert($activity[0]['event'] === 'photo_download', 'Activity log should return newest events first');
+    t_assert($activity[0]['photo_name'] === 'sample.jpg', 'Photo download activity should include the photo name');
+    t_assert((new DateTimeImmutable((string) $activity[0]['at'])) !== false, 'Activity timestamps should be valid ISO dates');
+
+    $sessionIdBeforeUnlock = session_id();
     set_gallery_unlocked($galleryA);
+    t_assert(session_id() !== $sessionIdBeforeUnlock, 'Unlocking a gallery must rotate the session ID');
     t_assert(gallery_is_unlocked($config, $galleryA), 'Gallery unlock should succeed');
 
     // Unlock TTL should expire.
@@ -278,6 +303,10 @@ try {
         ['id' => 'a1', 'stored_name' => 'a.jpg', 'original_name' => 'a.jpg', 'mime' => 'image/jpeg', 'size' => 4096, 'preview' => 'a.jpg'],
         ['id' => 'b2', 'stored_name' => 'b.jpg', 'original_name' => 'b.jpg', 'mime' => 'image/jpeg', 'size' => 8192, 'preview' => null],
     ];
+    $selection = set_gallery_selection($config, $galleryB, 'a1', true);
+    t_assert($selection['photo_ids'] === ['a1'], 'Client selection should persist the selected photo ID');
+    t_assert(count(selected_gallery_files($config, $galleryB)) === 1, 'Selected-photo lookup should return only selected files');
+    t_assert_throws(static fn() => set_gallery_selection($config, $galleryB, 'missing', true), 'A client cannot select a photo outside the gallery');
     $galleryB = refresh_gallery_storage_stats($config, $galleryB, false);
     $galleryB = mark_gallery_zip_dirty($config, $galleryB);
     save_gallery($config, $galleryB);
@@ -301,12 +330,21 @@ try {
         t_assert($zipOpen->open($zipPath) === true, 'Generated ZIP must be readable');
         $zipOpen->close();
         t_assert(!(bool) glob($dirB . '/full.zip.tmp-*'), 'Temporary ZIP artifacts must not remain after successful build');
+
+        $selectionZipPath = build_gallery_selection_zip($config, $galleryB);
+        $selectionZip = new ZipArchive();
+        t_assert($selectionZip->open($selectionZipPath) === true, 'Selection ZIP must be readable');
+        t_assert($selectionZip->numFiles === 1, 'Selection ZIP must contain only selected photos');
+        t_assert($selectionZip->getNameIndex(0) === 'a.jpg', 'Selection ZIP should preserve original photo names');
+        $selectionZip->close();
+        unlink($selectionZipPath);
     }
 
     // Delete should decrease counts and mark zip outdated.
     $oldZipMtime = is_file($dirB . '/full.zip') ? (int) filemtime($dirB . '/full.zip') : 0;
     $galleryB = remove_photo($config, $galleryB, 'a1');
     t_assert(count($galleryB['files']) === 1, 'Photo delete should remove item');
+    t_assert(load_gallery_selection($config, $galleryB)['photo_ids'] === [], 'Deleting a photo should remove it from the client selection');
     t_assert((int) ($galleryB['storage']['file_count'] ?? 0) === 1, 'File count cache should decrease after delete');
     t_assert(!empty($galleryB['zip']['dirty']), 'ZIP must be marked outdated after delete');
     t_assert(!is_file($dirB . '/full.zip'), 'Deleting a photo should not rebuild ZIP immediately');

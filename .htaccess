@@ -1,0 +1,21 @@
+Options -Indexes -MultiViews
+DirectoryIndex index.php
+
+# Apache 2.4 with mod_rewrite is required. Fail closed if unavailable.
+<IfModule !mod_rewrite.c>
+    Require all denied
+</IfModule>
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule (^|/)\. - [F,END]
+    RewriteRule ^assets/[a-zA-Z0-9_/-]+\.(?:css|js|png|jpe?g|webp|gif|svg|ico|woff2?)$ - [END]
+    RewriteRule ^index\.php$ - [END]
+    RewriteRule ^(?:app|deploy|tests)(?:/|$) - [F,END,NC]
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule . - [F,END]
+    RewriteRule ^ index.php [QSA,END]
+</IfModule>
+<FilesMatch "^(?!index\.php$).+\.php$">
+    Require all denied
+</FilesMatch>

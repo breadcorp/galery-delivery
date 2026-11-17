@@ -203,6 +203,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .admin-photo span { color: var(--muted); font-size: 0.82rem; font-family: var(--font-mono); }
 
 .public-photo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; }
+.public-photo { position: relative; }
 .public-photo a {
   position: relative;
   display: block;
@@ -226,6 +227,16 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   transition: opacity 160ms ease, transform 160ms ease;
 }
 .public-photo a:hover .dl-label, .public-photo a:focus-visible .dl-label { opacity: 1; transform: translateY(0); }
+.photo-selection-form { position: absolute; top: 10px; right: 10px; z-index: 2; margin: 0; }
+.photo-selection-button { min-height: 34px; padding: 0.42rem 0.68rem; color: var(--paper); background: rgba(21, 18, 13, 0.86); border-color: rgba(238, 227, 199, 0.38); backdrop-filter: blur(8px); }
+.photo-selection-button.selected { color: #17120a; background: var(--accent-strong); border-color: var(--accent-strong); }
+.selection-list, .activity-list { list-style: none; margin: 18px 0 0; padding: 0; }
+.selection-list li { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-top: 1px solid var(--line); }
+.selection-list strong { min-width: 0; overflow-wrap: anywhere; font-size: 0.9rem; font-weight: 500; }
+.selection-list span { flex: 0 0 auto; color: var(--muted); font-family: var(--font-mono); font-size: 0.82rem; }
+.activity-list li { display: grid; grid-template-columns: minmax(190px, 0.8fr) minmax(0, 1.2fr); gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.activity-list time { color: var(--muted); font-family: var(--font-mono); font-size: 0.8rem; overflow-wrap: anywhere; }
+.activity-list span { font-size: 0.9rem; overflow-wrap: anywhere; }
 .raw-file {
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -434,4 +445,14 @@ body.gallery-page {
 @media (max-width: 840px) {
   .hero-card, .top-row, .storage-card, .disk-card { flex-direction: column; align-items: flex-start; }
   .stats-grid, .setup-grid, .password-grid { grid-template-columns: 1fr; }
+  .activity-list li { grid-template-columns: 1fr; gap: 3px; }
 }
+.upload-queue { margin-top: 20px; }
+.upload-actions { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
+.upload-items { padding:0; list-style:none; max-height:440px; overflow:auto; }
+.upload-items li { display:grid; grid-template-columns:minmax(120px,1fr) minmax(100px,1fr) 100px auto auto; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid #ffffff22; }
+.upload-queue [hidden] { display:none !important; }
+.upload-items li span { overflow-wrap:anywhere; }
+.upload-items progress { width:100%; accent-color:#82b9a2; }
+.dropzone.dragging { outline:3px solid #82b9a2; background:#82b9a222; }
+@media(max-width:650px) { .upload-items li { grid-template-columns:1fr 1fr; } }
